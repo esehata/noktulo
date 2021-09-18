@@ -13,20 +13,6 @@ impl Key {
             Key(bytes.to_vec())
     }
 
-    pub fn zeroes_in_prefix(&self) -> usize {
-        for i in 0..self.0.len() {
-            if self.0[i] == 0 {
-                continue;
-            }
-            for j in (0..8).rev() {
-                if (self.0[i] >> (7 - j)) & 0x1 != 0 {
-                    return i * 8 + j;
-                }
-            }
-        }
-        self.0.len() * 8 - 1
-    }
-
     pub fn random(len: usize) -> Key {
         let mut data = vec![0; len];
         let mut rng = ChaCha20Rng::from_entropy();
@@ -48,6 +34,38 @@ impl Key {
         let result = hasher.finalize();
         let hash = result[..].to_vec().iter().take(self.0.len()).copied().collect();
         Key(hash)
+    }
+
+    pub fn resize(&mut self, new_len: usize) {
+        self.0.resize(new_len, 0);
+    }
+
+    pub fn zeroes_in_prefix(&self) -> usize {
+        for i in 0..self.0.len() {
+            if self.0[i] == 0 {
+                continue;
+            }
+            for j in (0..8).rev() {
+                if (self.0[i] >> j) & 0x1 != 0 {
+                    return i * 8 + j;
+                }
+            }
+        }
+        self.0.len() * 8 - 1
+    }
+
+    pub fn is_prefix(&self, other: &Key) -> bool {
+        if self.len() > other.len() {
+            false
+        } else {
+            for (i,b) in self.0.iter().enumerate() {
+                if *b != other.0[i] {
+                    return false;
+                }
+            }
+
+            true
+        }
     }
 
     pub fn len(&self) -> usize {

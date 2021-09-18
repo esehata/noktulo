@@ -1,16 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 use crate::kad::KEY_LEN;
 
 use super::key::Key;
 use super::routing::{NodeInfo, RoutingTable};
 use super::rpc::{ReqHandle, Rpc};
-use super::{A_PARAM, K_PARAM};
+use super::{BROADCAST_TIME_OUT, K_PARAM};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
@@ -20,6 +21,7 @@ pub enum Request {
     FindValue(Key),
     Unicast(Vec<u8>),
     Broadcast(Vec<u8>),
+    Multicast(Key, Vec<u8>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,6 +45,7 @@ pub struct Node {
     store_predicate: Arc<dyn Fn(&[u8]) -> bool + Sync + Send>,
     broadcast_tokens: Arc<Mutex<HashSet<Key>>>,
     rpc: Arc<Mutex<Rpc>>,
+    tx: UnboundedSender<Vec<u8>>,
     node_info: NodeInfo,
 }
 
@@ -53,6 +56,7 @@ impl Node {
         node_id: Key,
         store_requirement: Arc<dyn Fn(&[u8]) -> bool + Sync + Send>,
         rpc: Arc<Mutex<Rpc>>,
+        multicast_tx: UnboundedSender<Vec<u8>>,
         bootstrap: Option<NodeInfo>,
     ) -> Node {
         assert_eq!(key_length, node_id.len());
@@ -89,6 +93,7 @@ impl Node {
             store_predicate: store_requirement,
             broadcast_tokens: Arc::new(Mutex::new(HashSet::new())),
             rpc: rpc.clone(),
+            tx: multicast_tx,
             node_info,
         };
 
@@ -180,20 +185,16 @@ impl Node {
                 ret
             }
             Request::Unicast(msg) => {
-                println!(
-                    "{}",
-                    String::from_utf8(msg).unwrap_or(String::from("INVALID MESSAGE"))
-                );
+                self.tx.send(msg).unwrap();
 
                 Reply::Ping
             }
             Request::Broadcast(msg) => {
-                println!(
-                    "{}",
-                    String::from_utf8(msg.clone()).unwrap_or(String::from("INVALID MESSAGE"))
-                );
+                self.tx.send(msg.clone()).unwrap();
+
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
-                let is_relay = !broadcast_tokens.contains(&Key::hash(&msg, KEY_LEN));
+                let hash = Key::hash(&msg, KEY_LEN);
+                let is_relay = !broadcast_tokens.contains(&hash);
 
                 drop(broadcast_tokens);
 
@@ -205,6 +206,44 @@ impl Node {
                         println!("INFO: Broadcast message, ignoring");
                     }
                 }
+
+                let node = self.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
+
+                    let mut broadcast_tokens = node.broadcast_tokens.lock().await;
+                    broadcast_tokens.remove(&hash);
+                    drop(broadcast_tokens);
+                });
+
+                Reply::Ping
+            }
+            Request::Multicast(k, msg) => {
+                self.tx.send(msg.clone()).unwrap();
+
+                let broadcast_tokens = self.broadcast_tokens.lock().await;
+                let hash = Key::hash(&msg, KEY_LEN);
+                let is_relay = !broadcast_tokens.contains(&hash);
+
+                drop(broadcast_tokens);
+
+                if is_relay {
+                    let node = self.clone();
+                    tokio::spawn(async move { node.multicast(&k, &msg).await });
+                } else {
+                    if cfg!(debug_assertions) {
+                        println!("INFO: Multicast message, ignoring");
+                    }
+                }
+
+                let node = self.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
+
+                    let mut broadcast_tokens = node.broadcast_tokens.lock().await;
+                    broadcast_tokens.remove(&hash);
+                    drop(broadcast_tokens);
+                });
 
                 Reply::Ping
             }
@@ -255,6 +294,23 @@ impl Node {
             .lock()
             .await
             .send_req(Request::Unicast(msg.to_vec()), self.node_info.clone(), dst)
+            .await
+    }
+
+    pub async fn multicast_raw(
+        &self,
+        dst: NodeInfo,
+        k: &Key,
+        msg: &[u8],
+    ) -> UnboundedReceiver<Option<Reply>> {
+        self.rpc
+            .lock()
+            .await
+            .send_req(
+                Request::Multicast(k.clone(), msg.to_vec()),
+                self.node_info.clone(),
+                dst,
+            )
             .await
     }
 
@@ -392,43 +448,96 @@ impl Node {
         ret
     }
 
+    pub async fn multicast(&self, prefix: &Key, msg: &[u8]) -> Vec<NodeInfo> {
+        let mut id = prefix.clone();
+        id.resize(self.key_length);
+        let mut ret = Vec::new();
+
+        let candidates = self.lookup_nodes(id).await;
+        let target: Vec<_> = candidates
+            .iter()
+            .filter(|(_, d)| d.zeroes_in_prefix() >= prefix.len() * 8)
+            .collect();
+        if target.is_empty() {
+            for (node_info, _) in candidates.iter().rev() {
+                let rep = self
+                    .multicast_raw(node_info.clone(), prefix, msg)
+                    .await
+                    .recv()
+                    .await
+                    .unwrap();
+                let mut routes = self.routes.lock().await;
+                if let Some(Reply::Ping) = rep {
+                    routes.update(node_info.clone());
+                    ret.push(node_info.clone());
+                    break;
+                } else {
+                    routes.remove(&node_info);
+                }
+            }
+        } else {
+            let mut joins = Vec::new();
+            for (node_info, _) in target.iter() {
+                let node = self.clone();
+                let node_info = node_info.clone();
+                let prefix = prefix.clone();
+                let msg = Vec::from(msg);
+                joins.push(tokio::spawn(async move {
+                    node.multicast_raw(node_info, &prefix, &msg[..])
+                        .await
+                        .recv()
+                        .await
+                        .unwrap()
+                }));
+            }
+            let mut routes = self.routes.lock().await;
+            for (handle, (node_info, _)) in joins.into_iter().zip(target) {
+                let rep = handle.await.unwrap();
+                if let Some(Reply::Ping) = rep {
+                    routes.update(node_info.clone());
+                    ret.push(node_info.clone());
+                } else {
+                    routes.remove(&node_info);
+                }
+            }
+        }
+
+        ret
+    }
+
     pub async fn lookup_nodes(&self, id: Key) -> Vec<(NodeInfo, Key)> {
         let mut queried = HashSet::new();
         let mut ret = HashSet::new();
 
+        // Add the closest nodes we know
         let routes = self.routes.lock().await;
         let mut to_query = BinaryHeap::from(routes.closest_nodes(id.clone(), K_PARAM));
         drop(routes);
+
         for entry in &to_query {
             queried.insert(entry.clone());
         }
 
-        while !to_query.is_empty() {
-            let mut joins = Vec::new();
-            let mut queries = Vec::new();
-            let mut results = Vec::new();
-            for _ in 0..A_PARAM {
-                match to_query.pop() {
-                    Some(entry) => queries.push(entry),
-                    None => break,
-                }
-            }
-            for &(ref ni, _) in &queries {
-                let ni = ni.clone();
-                joins.push(self.find_node(ni.clone(), id.clone()));
-            }
-            for j in joins {
-                results.push(j.await);
-            }
-            for (res, query) in results.into_iter().zip(queries) {
-                if let Some(entries) = res {
-                    ret.insert(query);
-                    for entry in entries {
-                        if queried.insert(entry.clone()) {
-                            to_query.push(entry);
-                        }
-                    }
-                }
+        let mut joins = Vec::new();
+        let mut queries = Vec::new();
+        let mut results = Vec::new();
+        for entry in to_query.drain() {
+            queries.push(entry);
+        }
+        for &(ref ni, _) in &queries {
+            let ni = ni.clone();
+            let id = id.clone();
+            let node = self.clone();
+            joins.push(tokio::spawn(async move {
+                node.find_node(ni.clone(), id.clone()).await
+            }));
+        }
+        for j in joins {
+            results.push(j.await.unwrap());
+        }
+        for (res, query) in results.into_iter().zip(queries) {
+            if let Some(_) = res {
+                ret.insert(query);
             }
         }
 
@@ -450,45 +559,34 @@ impl Node {
             queried.insert(entry.clone());
         }
 
-        while !to_query.is_empty() {
-            let mut joins = Vec::new();
-            let mut queries = Vec::new();
-            let mut results = Vec::new();
-            for _ in 0..A_PARAM {
-                match to_query.pop() {
-                    Some(entry) => {
-                        queries.push(entry);
+        let mut joins = Vec::new();
+        let mut queries = Vec::new();
+        let mut results = Vec::new();
+        for entry in to_query.drain() {
+            queries.push(entry);
+        }
+        for &(ref ni, _) in &queries {
+            let k = k.clone();
+            let ni = ni.clone();
+            let node = self.clone();
+            joins.push(tokio::spawn(
+                async move { node.find_value(ni.clone(), k).await },
+            ));
+        }
+        for j in joins {
+            results.push(j.await.unwrap());
+        }
+        for (res, query) in results.into_iter().zip(queries) {
+            if let Some(fvres) = res {
+                match fvres {
+                    FindValueResult::Nodes(_) => {
+                        ret.insert(query);
                     }
-                    None => {
-                        break;
-                    }
-                }
-            }
-            for &(ref ni, _) in &queries {
-                let k = k.clone();
-                let ni = ni.clone();
-                joins.push(self.find_value(ni.clone(), k));
-            }
-            for j in joins {
-                results.push(j.await);
-            }
-            for (res, query) in results.into_iter().zip(queries) {
-                if let Some(fvres) = res {
-                    match fvres {
-                        FindValueResult::Nodes(entries) => {
-                            ret.insert(query);
-                            for entry in entries {
-                                if queried.insert(entry.clone()) {
-                                    to_query.push(entry);
-                                }
-                            }
-                        }
-                        FindValueResult::Value(val) => {
-                            let mut ret = ret.into_iter().collect::<Vec<_>>();
-                            ret.sort_by(|a, b| a.1.cmp(&b.1));
-                            ret.truncate(K_PARAM);
-                            return (Some(val), ret);
-                        }
+                    FindValueResult::Value(val) => {
+                        let mut ret = ret.into_iter().collect::<Vec<_>>();
+                        ret.sort_by(|a, b| a.1.cmp(&b.1));
+                        ret.truncate(K_PARAM);
+                        return (Some(val), ret);
                     }
                 }
             }
@@ -505,10 +603,17 @@ impl Node {
         let candidates = self.lookup_nodes(k.to_hash()).await;
         let mut res = Vec::new();
         for (node_info, _) in candidates.iter() {
-            res.push(self.store(node_info.clone(), k.clone(), v));
+            let node_info = node_info.clone();
+            let k = k.clone();
+            let node = self.clone();
+            let mut vec = Vec::new();
+            vec.extend_from_slice(v);
+            res.push(tokio::spawn(async move {
+                node.store(node_info, k, &vec[..]).await;
+            }));
         }
         for r in res {
-            r.await;
+            r.await.unwrap();
         }
     }
 

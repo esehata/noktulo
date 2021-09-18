@@ -2,6 +2,7 @@ use std::io;
 use std::sync::Arc;
 use noktulo::kad::*;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::net::UdpSocket;
 
 #[tokio::main]
@@ -46,12 +47,13 @@ impl Noktulo {
         
         let socket = UdpSocket::bind("127.0.0.1:".to_string()+port).await.unwrap();
         let rpc = Arc::new(Mutex::new(Rpc::new(socket)));
+        let (tx, rx) = mpsc::unbounded_channel();
 
         let handle = Node::start(String::from("test_net"),
                                     KEY_LEN,
                                     Key::random(KEY_LEN),
                                     Arc::new(|_| true),
-                                    rpc.clone(), bootstrap).await;
+                                    rpc.clone(), tx, bootstrap).await;
 
         let mut dummy_info = NodeInfo {
             net_id: String::from("test_net"),
