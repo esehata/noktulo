@@ -107,6 +107,9 @@ impl Node {
     pub async fn start_req_handler(self, mut rx: UnboundedReceiver<ReqHandle>) {
         tokio::spawn(async move {
             while let Some(req_handle) = rx.recv().await {
+                if self.tx.is_closed() {
+                    break;
+                }
                 let node = self.clone();
                 tokio::spawn(async move {
                     let rep =
@@ -185,12 +188,20 @@ impl Node {
                 ret
             }
             Request::Unicast(msg) => {
-                self.tx.send(msg).unwrap();
+                if let Err(_) = self.tx.send(msg) {
+                    if cfg!(debug_assertions) {
+                        println!("INFO: Closing channel, since receiver is dead.");
+                    }
+                }
 
                 Reply::Ping
             }
             Request::Broadcast(msg) => {
-                self.tx.send(msg.clone()).unwrap();
+                if let Err(_) = self.tx.send(msg.clone()) {
+                    if cfg!(debug_assertions) {
+                        println!("INFO: Closing channel, since receiver is dead.");
+                    }
+                }
 
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
                 let hash = Key::hash(&msg, KEY_LEN);
@@ -219,8 +230,13 @@ impl Node {
                 Reply::Ping
             }
             Request::Multicast(k, msg) => {
-                self.tx.send(msg.clone()).unwrap();
-
+                if k.is_prefix(&self.node_info.id) {
+                    if let Err(_) = self.tx.send(msg.clone()) {
+                        if cfg!(debug_assertions) {
+                            println!("INFO: Closing channel, since receiver is dead.");
+                        }
+                    }
+                }
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
                 let hash = Key::hash(&msg, KEY_LEN);
                 let is_relay = !broadcast_tokens.contains(&hash);

@@ -40,6 +40,13 @@ impl Key {
         self.0.resize(new_len, 0);
     }
 
+    pub fn resize_with_random(&mut self, new_len: usize) {
+        let prev_len = self.0.len();
+        self.0.resize(new_len, 0);
+        let mut rng = ChaCha20Rng::from_entropy();
+        rng.fill_bytes(&mut self.0[prev_len..new_len]);
+    }
+
     pub fn zeroes_in_prefix(&self) -> usize {
         for i in 0..self.0.len() {
             if self.0[i] == 0 {

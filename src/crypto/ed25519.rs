@@ -13,14 +13,8 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
-    pub fn from_bytes_le(bytes: [u8; 32]) -> SecretKey {
+    pub fn from_bytes(bytes: [u8; 32]) -> SecretKey {
         SecretKey { sk: bytes }
-    }
-
-    pub fn from_bytes_be(bytes: [u8; 32]) -> SecretKey {
-        let mut rev = bytes;
-        rev.reverse();
-        SecretKey { sk: rev }
     }
 
     pub fn random() -> SecretKey {
@@ -29,14 +23,8 @@ impl SecretKey {
         SecretKey { sk }
     }
 
-    pub fn to_bytes_le(&self) -> [u8; 32] {
+    pub fn to_bytes(&self) -> [u8; 32] {
         self.sk
-    }
-
-    pub fn to_bytes_be(&self) -> [u8; 32] {
-        let mut ret = self.sk;
-        ret.reverse();
-        ret
     }
 
     pub fn get_pubkey(&self) -> PublicKey {
@@ -98,27 +86,14 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn from_bytes_le(bytes: &[u8; 32]) -> PublicKey {
+    pub fn from_bytes(bytes: &[u8; 32]) -> PublicKey {
         PublicKey {
             pk: Ed25519Point::decode(&bytes).unwrap(),
         }
     }
 
-    pub fn from_bytes_be(mut bytes: [u8; 32]) -> PublicKey {
-        bytes.reverse();
-        PublicKey {
-            pk: Ed25519Point::decode(&bytes).unwrap(),
-        }
-    }
-
-    pub fn to_bytes_le(&self) -> [u8; 32] {
+    pub fn to_bytes(&self) -> [u8; 32] {
         self.pk.encode()
-    }
-
-    pub fn to_bytes_be(&self) -> [u8; 32] {
-        let mut ret = self.pk.encode();
-        ret.reverse();
-        ret
     }
 
     pub fn verify(&self, signature: &[u8; 64], m: &[u8]) -> Result<bool, &str> {

@@ -103,11 +103,14 @@ impl Rpc {
                         );
                     }
 
-                    let node_infos = rpc.node_infos.lock().await;
-                    let node_info = node_infos.iter().find(|x| x.0.id == rmsg.dst.id);
+                    let mut node_infos = rpc.node_infos.lock().await;
+                    let node_info = node_infos
+                        .iter()
+                        .enumerate()
+                        .find(|(_, x)| x.0.id == rmsg.dst.id);
 
                     match node_info {
-                        Some(node_info) => {
+                        Some((index, node_info)) => {
                             if rmsg.src.net_id != node_info.0.net_id {
                                 if cfg!(debug_assertions) {
                                     println!(
@@ -134,7 +137,7 @@ impl Rpc {
                                                 "INFO: Closing channel, since receiver is dead."
                                             );
                                         }
-                                        break;
+                                        node_infos.swap_remove(index);
                                     }
                                 }
                                 Message::Reply(rep) => {
@@ -146,7 +149,11 @@ impl Rpc {
                             if cfg!(debug_assertions) {
                                 println!("WARN: Message received, but dst id does not match any nodes, ignoring.");
                             }
-                            continue;
+                            if node_infos.is_empty() {
+                                break;
+                            } else {
+                                continue;
+                            }
                         }
                     }
 
