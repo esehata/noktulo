@@ -6,7 +6,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
-use crate::kad::KEY_LEN;
+use crate::kad::TOKEN_KEY_LEN;
 
 use super::key::Key;
 use super::routing::{NodeInfo, RoutingTable};
@@ -204,7 +204,7 @@ impl Node {
                 }
 
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
-                let hash = Key::hash(&msg, KEY_LEN);
+                let hash = Key::hash(&msg, TOKEN_KEY_LEN);
                 let is_relay = !broadcast_tokens.contains(&hash);
 
                 drop(broadcast_tokens);
@@ -212,20 +212,20 @@ impl Node {
                 if is_relay {
                     let node = self.clone();
                     tokio::spawn(async move { node.broadcast(&msg).await });
+
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
+
+                        let mut broadcast_tokens = node.broadcast_tokens.lock().await;
+                        broadcast_tokens.remove(&hash);
+                        drop(broadcast_tokens);
+                    });
                 } else {
                     if cfg!(debug_assertions) {
                         println!("INFO: Broadcast message, ignoring");
                     }
                 }
-
-                let node = self.clone();
-                tokio::spawn(async move {
-                    sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
-
-                    let mut broadcast_tokens = node.broadcast_tokens.lock().await;
-                    broadcast_tokens.remove(&hash);
-                    drop(broadcast_tokens);
-                });
 
                 Reply::Ping
             }
@@ -238,7 +238,7 @@ impl Node {
                     }
                 }
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
-                let hash = Key::hash(&msg, KEY_LEN);
+                let hash = Key::hash(&msg, TOKEN_KEY_LEN);
                 let is_relay = !broadcast_tokens.contains(&hash);
 
                 drop(broadcast_tokens);
@@ -246,20 +246,20 @@ impl Node {
                 if is_relay {
                     let node = self.clone();
                     tokio::spawn(async move { node.multicast(&k, &msg).await });
+
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
+
+                        let mut broadcast_tokens = node.broadcast_tokens.lock().await;
+                        broadcast_tokens.remove(&hash);
+                        drop(broadcast_tokens);
+                    });
                 } else {
                     if cfg!(debug_assertions) {
                         println!("INFO: Multicast message, ignoring");
                     }
                 }
-
-                let node = self.clone();
-                tokio::spawn(async move {
-                    sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
-
-                    let mut broadcast_tokens = node.broadcast_tokens.lock().await;
-                    broadcast_tokens.remove(&hash);
-                    drop(broadcast_tokens);
-                });
 
                 Reply::Ping
             }
@@ -428,7 +428,7 @@ impl Node {
 
     pub async fn broadcast(&self, msg: &[u8]) -> Vec<NodeInfo> {
         let mut broadcast_tokens = self.broadcast_tokens.lock().await;
-        broadcast_tokens.insert(Key::hash(msg, KEY_LEN));
+        broadcast_tokens.insert(Key::hash(msg, TOKEN_KEY_LEN));
         drop(broadcast_tokens);
 
         let mut ret = Vec::new();
@@ -465,6 +465,10 @@ impl Node {
     }
 
     pub async fn multicast(&self, prefix: &Key, msg: &[u8]) -> Vec<NodeInfo> {
+        let mut broadcast_tokens = self.broadcast_tokens.lock().await;
+        broadcast_tokens.insert(Key::hash(msg, TOKEN_KEY_LEN));
+        drop(broadcast_tokens);
+
         let mut id = prefix.clone();
         id.resize(self.key_length);
         let mut ret = Vec::new();

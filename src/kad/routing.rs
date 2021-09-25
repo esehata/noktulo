@@ -1,5 +1,5 @@
 use super::key::Key;
-use super::{K_PARAM, N_BUCKETS};
+use super::K_PARAM;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::vec::Vec;
@@ -22,7 +22,7 @@ impl RoutingTable {
     pub fn new(id_length: usize, node_info: &NodeInfo) -> RoutingTable {
         assert_eq!(id_length, node_info.id.len());
         let mut buckets = Vec::new();
-        for _ in 0..N_BUCKETS {
+        for _ in 0..id_length*8 {
             buckets.push(Vec::new());
         }
         let mut ret = RoutingTable {

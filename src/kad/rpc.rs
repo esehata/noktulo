@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
 use std::str;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
@@ -14,7 +16,8 @@ use super::key::Key;
 use super::node::{Reply, Request};
 use super::routing::NodeInfo;
 
-use super::{KEY_LEN, MESSAGE_LEN, TIME_OUT};
+use super::{MESSAGE_LEN, TIME_OUT, TOKEN_KEY_LEN};
+use crate::service::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcMessage {
@@ -228,9 +231,9 @@ impl Rpc {
     ) -> UnboundedReceiver<Option<Reply>> {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut pending = self.pending.lock().await;
-        let mut token = Key::random(KEY_LEN);
+        let mut token = Key::random(TOKEN_KEY_LEN);
         while pending.contains_key(&token) {
-            token = Key::random(KEY_LEN);
+            token = Key::random(TOKEN_KEY_LEN);
         }
         pending.insert(token.clone(), tx.clone());
         drop(pending);
@@ -263,5 +266,96 @@ impl Rpc {
             }
         });
         rx
+    }
+
+    async fn node_infos(&self) -> Vec<NodeInfo> {
+        let node_infos = self.node_infos.lock().await;
+        node_infos.iter().map(|x| x.0.clone()).collect()
+    }
+
+    pub async fn start_nodeinfo_server(&self, addr: SocketAddr) -> io::Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+
+        loop {
+            let (socket, _) = listener.accept().await?;
+            let rpc = self.clone();
+            tokio::spawn(async move {
+                let mut stream = BufReader::new(socket);
+                let mut first_line = String::new();
+                stream.read_line(&mut first_line).await.unwrap();
+
+                let mut params = first_line.split_whitespace();
+                let method = params.next();
+                let query = params.next();
+
+                match (method, query) {
+                    (Some("GET"), Some(query)) => {
+                        let mut node_infos = rpc.node_infos().await;
+                        match query {
+                            "test" => {
+                                node_infos = node_infos
+                                    .iter()
+                                    .filter(|x| {
+                                        x.net_id == TESTNET_USER_DHT
+                                            || x.net_id == TESTNET_PUBSUB_DHT
+                                    })
+                                    .cloned()
+                                    .collect();
+                            }
+                            "main" => {
+                                node_infos = node_infos
+                                    .iter()
+                                    .filter(|x| {
+                                        x.net_id == MAINNET_USER_DHT
+                                            || x.net_id == MAINNET_PUBSUB_DHT
+                                    })
+                                    .cloned()
+                                    .collect();
+                            }
+                            _ => (),
+                        }
+                        let msg = serde_json::to_string(&node_infos).unwrap();
+                        stream
+                            .get_mut()
+                            .write_all(
+                                format!(
+                                    "HTTP/1.1 200 OK\r\n
+                                    Content-Type: application/json; charset=UTF-8\r\n
+                                    Content-Length: {}\r\n\r\n{}",
+                                    msg.len(),
+                                    msg
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    _ => {
+                        stream
+                            .get_mut()
+                            .write_all("HTTP/1.1 400 Bad Request\r\n\r\n".as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                }
+            });
+        }
+    }
+
+    pub async fn get_nodeinfos(addr: SocketAddr) -> io::Result<Vec<NodeInfo>> {
+        let mut stream = TcpStream::connect(addr).await?;
+        stream.write_all("GET test".as_bytes()).await?;
+        
+        let mut buf = String::new();
+        let mut stream = BufReader::new(stream);
+        stream.read_line(&mut buf).await?; // HTTP/1.1 200 OK\r\n
+        stream.read_line(&mut buf).await?; // Content-Type: application/json; charset=UTF-8\r\n
+        stream.read_line(&mut buf).await?; // Content-Length: {}\r\n
+        stream.read_line(&mut buf).await?; // \r\n
+        stream.read_to_string(&mut buf).await?; // Content
+        
+        let node_infos = serde_json::from_str(&buf)?;
+
+        Ok(node_infos)
     }
 }

@@ -5,9 +5,9 @@ use std::convert::TryInto;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserInfo {
-    pub name: String,
     pub public_key: [u8; 32],
     pub address: Address,
+    pub name: String,
     pub created_at: u64,
     pub description: String,
     pub signature: Vec<u8>, // 64 bytes, Sign(name|created_at|description)
@@ -15,8 +15,8 @@ pub struct UserInfo {
 
 impl UserInfo {
     pub fn new(
-        name: &str,
         public_key: [u8; 32],
+        name: &str,
         created_at: u64,
         description: &str,
         signature: [u8; 64],
@@ -99,7 +99,7 @@ impl Address {
     }
 
     pub fn to_bytes(&self) -> [u8;33] {
-        let a = [self.version];
+        let a = self.version.to_le_bytes();
         [&a[..], &self.address.to_vec()].concat().try_into().unwrap()
     }
 

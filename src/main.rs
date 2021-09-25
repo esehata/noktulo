@@ -2,10 +2,11 @@ use chrono::Utc;
 use noktulo::account::user::UserInfo;
 use noktulo::crypto::SecretKey;
 use noktulo::kad::*;
-use noktulo::service::UserHandle;
+use noktulo::service::{TESTNET_USER_DHT, UserHandle};
 use serde_json;
 use std::convert::TryInto;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,7 +27,7 @@ impl Noktulo {
         Noktulo {}
     }
 
-    pub async fn cli() -> io::Result<()> {
+    pub async fn cli(bootstrap: Option<SocketAddr>) -> io::Result<()> {
         let mut userfile = OpenOptions::new()
             .read(true)
             .write(true)
@@ -58,7 +59,7 @@ impl Noktulo {
 
             if index < users.len() {
                 let user_handle = users[index].clone();
-                Noktulo::timeline(user_handle).await;
+                Noktulo::timeline(user_handle, bootstrap).await;
             } else if index == users.len() {
                 let secret_key = SecretKey::random();
                 let public_key = secret_key.get_pubkey();
@@ -84,8 +85,8 @@ impl Noktulo {
                     )
                     .unwrap();
                 let user_info = UserInfo::new(
-                    &name,
                     public_key.to_bytes(),
+                    &name,
                     created_at,
                     &description,
                     signature,
@@ -113,8 +114,8 @@ impl Noktulo {
         Ok(())
     }
 
-    pub async fn timeline(user_handle: UserHandle) {
-
+    pub async fn timeline(user_handle: UserHandle, bootstrap: Option<SocketAddr>) {
+        
     }
 
     pub async fn run(&mut self) -> io::Result<()> {
@@ -129,7 +130,7 @@ impl Noktulo {
             Some(NodeInfo {
                 id: Key::from(params[1]),
                 addr: params[0].parse().unwrap(),
-                net_id: String::from("test_net"),
+                net_id: String::from(TESTNET_USER_DHT),
             })
         };
 
@@ -149,9 +150,9 @@ impl Noktulo {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         let handle = Node::start(
-            String::from("test_net"),
-            KEY_LEN,
-            Key::random(KEY_LEN),
+            String::from(TESTNET_USER_DHT),
+            TOKEN_KEY_LEN,
+            Key::random(TOKEN_KEY_LEN),
             Arc::new(|_| true),
             rpc.clone(),
             tx,
@@ -160,9 +161,9 @@ impl Noktulo {
         .await;
 
         let mut dummy_info = NodeInfo {
-            net_id: String::from("test_net"),
+            net_id: String::from(TESTNET_USER_DHT),
             addr: "127.0.0.1:8080".parse().unwrap(),
-            id: Key::random(KEY_LEN),
+            id: Key::random(TOKEN_KEY_LEN),
         };
 
         loop {
