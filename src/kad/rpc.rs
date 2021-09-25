@@ -1,3 +1,4 @@
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
@@ -91,20 +92,16 @@ impl Rpc {
                     match serde_json::from_str(str::from_utf8(&buf[..len]).unwrap()) {
                         Ok(e) => rmsg = e,
                         Err(_) => {
-                            if cfg!(debug_assertions) {
-                                println!("WARN: Message with invalid json, ignoring.");
-                            }
+                            warn!("Message with invalid json, ignoring.");
                             continue;
                         }
                     };
                     rmsg.src.addr = src_addr;
 
-                    if cfg!(debug_assertions) {
-                        println!(
-                            "DEBUG: |  IN | {:?} {:?} <== {:?}",
-                            rmsg.token, rmsg.msg, rmsg.src.id
-                        );
-                    }
+                    debug!(
+                        "|  IN | {:?} {:?} <== {:?}",
+                        rmsg.token, rmsg.msg, rmsg.src.id
+                    );
 
                     let mut node_infos = rpc.node_infos.lock().await;
                     let node_info = node_infos
@@ -115,11 +112,7 @@ impl Rpc {
                     match node_info {
                         Some((index, node_info)) => {
                             if rmsg.src.net_id != node_info.0.net_id {
-                                if cfg!(debug_assertions) {
-                                    println!(
-                                        "WARN: Message from different net_id received, ignoring."
-                                    );
-                                }
+                                warn!("Message from different net_id received, ignoring.");
                                 continue;
                             }
 
@@ -135,11 +128,7 @@ impl Rpc {
                                         rpc: rpc.clone(),
                                     };
                                     if let Err(_) = node_info.1.send(req_handle) {
-                                        if cfg!(debug_assertions) {
-                                            println!(
-                                                "INFO: Closing channel, since receiver is dead."
-                                            );
-                                        }
+                                        info!("Closing channel, since receiver is dead.");
                                         node_infos.swap_remove(index);
                                     }
                                 }
@@ -149,9 +138,9 @@ impl Rpc {
                             }
                         }
                         None => {
-                            if cfg!(debug_assertions) {
-                                println!("WARN: Message received, but dst id does not match any nodes, ignoring.");
-                            }
+                            warn!(
+                                "Message received, but dst id does not match any nodes, ignoring."
+                            );
                             if node_infos.is_empty() {
                                 break;
                             } else {
@@ -191,15 +180,11 @@ impl Rpc {
             let mut pending = self.pending.lock().await;
             let send_res = match pending.get(&token) {
                 Some(tx) => {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Reply received: {:?}", token);
-                    }
+                    info!("Reply received: {:?}", token);
                     tx.send(Some(rep))
                 }
                 None => {
-                    if cfg!(debug_assertions) {
-                        println!("WARN: Unsolicited reply received, ignoring: {:?}", token);
-                    }
+                    warn!("Unsolicited reply received, ignoring: {:?}", token);
                     return;
                 }
             };
@@ -215,12 +200,10 @@ impl Rpc {
             .send_to(&enc_msg.as_bytes(), addr)
             .await
             .unwrap();
-        if cfg!(debug_assertions) {
-            println!(
-                "DEBUG: | OUT | {:?} {:?} ==> {:?} ",
-                rmsg.token, rmsg.msg, rmsg.dst.id
-            );
-        }
+        debug!(
+            "| OUT | {:?} {:?} ==> {:?} ",
+            rmsg.token, rmsg.msg, rmsg.dst.id
+        );
     }
 
     pub async fn send_req(
@@ -259,9 +242,7 @@ impl Rpc {
             if let Ok(_) = tx.send(None) {
                 let mut pending = rpc.pending.lock().await;
                 if let Some(_) = pending.remove(&token) {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Removed pending token: {:?}", token);
-                    }
+                    info!("Removed pending token: {:?}", token);
                 };
             }
         });
@@ -345,7 +326,7 @@ impl Rpc {
     pub async fn get_nodeinfos(addr: SocketAddr) -> io::Result<Vec<NodeInfo>> {
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_all("GET test".as_bytes()).await?;
-        
+
         let mut buf = String::new();
         let mut stream = BufReader::new(stream);
         stream.read_line(&mut buf).await?; // HTTP/1.1 200 OK\r\n
@@ -353,7 +334,7 @@ impl Rpc {
         stream.read_line(&mut buf).await?; // Content-Length: {}\r\n
         stream.read_line(&mut buf).await?; // \r\n
         stream.read_to_string(&mut buf).await?; // Content
-        
+
         let node_infos = serde_json::from_str(&buf)?;
 
         Ok(node_infos)

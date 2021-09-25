@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    env_logger::init();
     let mut app = Noktulo::new();
     app.run().await
 }
@@ -115,7 +116,7 @@ impl Noktulo {
     }
 
     pub async fn timeline(user_handle: UserHandle, bootstrap: Option<SocketAddr>) {
-        
+
     }
 
     pub async fn run(&mut self) -> io::Result<()> {

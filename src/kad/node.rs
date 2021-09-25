@@ -1,3 +1,4 @@
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
@@ -79,12 +80,10 @@ impl Node {
             routes.update(bootstrap);
         }
 
-        if cfg!(debug_assertions) {
-            println!(
-                "INFO: new node created at {} with ID {:?}",
-                &node_info.addr, &node_info.id
-            );
-        }
+        info!(
+            "new node created at {} with ID {:?}",
+            &node_info.addr, &node_info.id
+        );
 
         let node = Node {
             key_length,
@@ -117,9 +116,7 @@ impl Node {
                     req_handle.rep(rep.await, node.node_info.clone()).await;
                 });
             }
-            if cfg!(debug_assertions) {
-                println!("INFO: Channnel closed, since sender is dead.");
-            }
+            info!("Channnel closed, since sender is dead.");
         });
     }
 
@@ -189,18 +186,14 @@ impl Node {
             }
             Request::Unicast(msg) => {
                 if let Err(_) = self.tx.send(msg) {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Closing channel, since receiver is dead.");
-                    }
+                        info!("Closing channel, since receiver is dead.");
                 }
 
                 Reply::Ping
             }
             Request::Broadcast(msg) => {
                 if let Err(_) = self.tx.send(msg.clone()) {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Closing channel, since receiver is dead.");
-                    }
+                    info!("Closing channel, since receiver is dead.");
                 }
 
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
@@ -222,9 +215,7 @@ impl Node {
                         drop(broadcast_tokens);
                     });
                 } else {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Broadcast message, ignoring");
-                    }
+                    info!("Broadcast message, ignoring");
                 }
 
                 Reply::Ping
@@ -232,9 +223,7 @@ impl Node {
             Request::Multicast(k, msg) => {
                 if k.is_prefix(&self.node_info.id) {
                     if let Err(_) = self.tx.send(msg.clone()) {
-                        if cfg!(debug_assertions) {
-                            println!("INFO: Closing channel, since receiver is dead.");
-                        }
+                        info!("Closing channel, since receiver is dead.");
                     }
                 }
                 let broadcast_tokens = self.broadcast_tokens.lock().await;
@@ -256,9 +245,7 @@ impl Node {
                         drop(broadcast_tokens);
                     });
                 } else {
-                    if cfg!(debug_assertions) {
-                        println!("INFO: Multicast message, ignoring");
-                    }
+                    info!("Multicast message, ignoring");
                 }
 
                 Reply::Ping
