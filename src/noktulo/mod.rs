@@ -19,9 +19,9 @@ pub struct Noktulo {
 }
 
 impl Noktulo {
-    pub async fn init(cfg: Config) -> Noktulo {
+    pub async fn init(config: Config) -> Noktulo {
         let mut bootstrap_nodeinfo = Vec::new();
-        for addr in cfg.bootstrap {
+        for addr in config.bootstrap {
             let ret = Rpc::get_nodeinfos(addr).await;
             if let Ok(mut v) = ret {
                 bootstrap_nodeinfo.append(&mut v);
@@ -39,9 +39,9 @@ impl Noktulo {
             .cloned()
             .collect();
 
-        let socket = UdpSocket::bind(cfg.bind_addr).await.unwrap();
+        let socket = UdpSocket::bind(config.bind_addr).await.unwrap();
         let rpc = Rpc::new(socket);
-        if let Some(addr) = cfg.nodeinfo_addr {
+        if let Some(addr) = config.nodeinfo_addr {
             rpc.start_nodeinfo_server(addr).await.unwrap();
         }
 
@@ -67,10 +67,14 @@ impl Noktulo {
     pub async fn create_subscriber(&self) -> Subscriber {
         Subscriber::new(self.rpc.clone(), &self.pubsub_dht_bootstrap).await
     }
+
+    pub async fn get_pubkey(&self, addr: Address) -> Option<PublicKey> {
+        self.user_dht.get_pubkey(addr).await
+    }
 }
 
 pub struct Config {
-    bind_addr: SocketAddr,
-    nodeinfo_addr: Option<SocketAddr>,
-    bootstrap: Vec<SocketAddr>,
+    pub bind_addr: SocketAddr,
+    pub nodeinfo_addr: Option<SocketAddr>,
+    pub bootstrap: Vec<SocketAddr>,
 }

@@ -1,12 +1,16 @@
 use chrono::Utc;
 use noktulo::crypto::{PublicKey, SecretKey};
 use noktulo::kad::*;
+use noktulo::noktulo::{Config, Noktulo};
 use noktulo::service::{Publisher, Subscriber, UserDHT, UserHandle, TESTNET_USER_DHT};
+use noktulo::user::post::Post;
 use noktulo::user::user::{Address, UserAttribute};
 use serde_json;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,31 +21,63 @@ use tokio::sync::Mutex;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger::init();
-    let mut app = App::new();
+    let mut app = App::init().await.unwrap();
     app.run().await
 }
 
-struct App {}
+struct App {
+    nok: Noktulo,
+    user_handles: Vec<UserHandle>,
+    pubkeys: HashMap<Address, PublicKey>,
+}
 
 impl App {
-    pub fn new() -> App {
-        App {}
-    }
+    pub async fn init() -> io::Result<App> {
+        let config = Config {
+            bind_addr: SocketAddr::from_str("0.0.0.0:6270").unwrap(),
+            nodeinfo_addr: Some(SocketAddr::from_str("0.0.0.0:6271").unwrap()),
+            bootstrap: Vec::new(),
+        };
+        let nok = Noktulo::init(config).await;
 
-    pub async fn cli(bootstrap: Option<SocketAddr>) -> io::Result<()> {
         let mut userfile = OpenOptions::new()
             .read(true)
-            .write(true)
             .create(true)
             .open("users")
             .await?;
         let mut buf = vec![];
         userfile.read_to_end(&mut buf).await?;
 
-        let mut users: Vec<UserHandle> = serde_json::from_slice(&buf).unwrap();
+        let user_handles: Vec<UserHandle> = serde_json::from_slice(&buf).unwrap();
+
+        let mut pubkey_file = OpenOptions::new()
+            .read(true)
+            .create(true)
+            .open("pubkeys")
+            .await?;
+        let mut buf = vec![];
+        pubkey_file.read_to_end(&mut buf).await?;
+
+        let pk_bytes: Vec<[u8; 32]> = serde_json::from_slice(&buf).unwrap();
+        let mut pubkeys = HashMap::new();
+        for bytes in pk_bytes {
+            if let Ok(pk) = PublicKey::from_bytes(&bytes) {
+                let addr = Address::from(pk.clone());
+                pubkeys.insert(addr, pk);
+            }
+        }
+
+        Ok(App {
+            nok,
+            user_handles,
+            pubkeys,
+        })
+    }
+
+    pub async fn cli(&mut self) -> io::Result<()> {
         loop {
             println!("Select a user:");
-            for (i, u) in users.iter().enumerate() {
+            for (i, u) in self.user_handles.iter().enumerate() {
                 println!("[{}] {}", i, u.user_attr.name);
             }
             println!(
@@ -49,8 +85,8 @@ impl App {
         [{}] Create a new account
         [{}] Quit
         ",
-                users.len(),
-                users.len() + 1
+                self.user_handles.len(),
+                self.user_handles.len() + 1
             );
 
             print!("Input: ");
@@ -58,17 +94,12 @@ impl App {
             io::stdin().read_line(&mut s).unwrap();
             let index: usize = s.trim().parse().unwrap();
 
-            if index < users.len() {
-                let user_handle = users[index].clone();
-                App::timeline(user_handle, bootstrap).await;
-            } else if index == users.len() {
-                let user_handle = App::create_new_user();
-                users.push(user_handle);
-                userfile.set_len(0).await?;
-                userfile
-                    .write_all(serde_json::to_string(&users).unwrap().as_bytes())
-                    .await?;
-            } else if index == users.len() + 1 {
+            if index < self.user_handles.len() {
+                let user_handle = self.user_handles[index].clone();
+                self.timeline(user_handle).await;
+            } else if index == self.user_handles.len() {
+                self.create_new_user().await?;
+            } else if index == self.user_handles.len() + 1 {
                 break;
             } else {
                 panic!("invalid index!");
@@ -78,41 +109,54 @@ impl App {
         Ok(())
     }
 
-    pub async fn timeline(user_handle: UserHandle, bootstrap: Option<SocketAddr>) {
-        let mut bootstrap_nodeinfo = Vec::new();
-        if let Some(addr) = bootstrap {
-            let ret = Rpc::get_nodeinfos(addr).await;
-            if let Ok(v) = ret {
-                bootstrap_nodeinfo = v;
-            }
+    pub async fn timeline(&self, user_handle: UserHandle) {
+        let pk = PublicKey::from(SecretKey::from(user_handle.signing_key));
+
+        let publisher = self.nok.create_publisher(&pk).await;
+        let mut subscriber = self.nok.create_subscriber().await;
+
+        for (addr, _) in user_handle.followings.iter() {
+            subscriber.subscribe(addr.clone()).await;
         }
 
-        let user_dht_bootstrap: Vec<_> = bootstrap_nodeinfo
-            .iter()
-            .filter(|ni| ni.id.len() == 32)
-            .cloned()
-            .collect();
+        loop {
+            print!("> ");
+            let mut s = String::new();
+            io::stdin().read_line(&mut s).unwrap();
 
-        let pubsub_dht_bootstrap: Vec<_> = bootstrap_nodeinfo
-            .iter()
-            .filter(|ni| ni.id.len() == 64)
-            .cloned()
-            .collect();
+            match s.as_str() {
+                "update" => {
+                    let umsgs = subscriber.get_new_message().await;
+                    for umsg in umsgs {
+                        let pubkey;
+                        if let Some(pk) = self.pubkeys.get(&umsg.addr) {
+                            pubkey = pk.clone();
+                        } else {
+                            if let Some(pk) = self.nok.get_pubkey(umsg.addr.clone()).await {
+                                pubkey = pk;
+                            } else {
+                                continue;
+                            }
+                        }
 
-        let socket = UdpSocket::bind("0.0.0.0:6270").await.unwrap();
-        let rpc = Arc::new(Mutex::new(Rpc::new(socket)));
-
-        let user_dht = UserDHT::start(rpc.clone(), &user_dht_bootstrap).await;
-
-        let addr = Address::from(PublicKey::from(SecretKey::from(user_handle.signing_key)));
-
-        let publisher = Publisher::new(addr, rpc.clone(), &pubsub_dht_bootstrap).await;
-        let subscriber = Subscriber::new(rpc.clone(), &bootstrap_nodeinfo).await;
-
-
+                        if umsg.verify(&pubkey).is_ok() {
+                            match umsg.msg {
+                                MessageKind::Post(post) => {
+                                    if let Ok(post) =  serde_json::from_slice::<Post>(&post.post_bytes) {
+                                        // TODO!
+                                    }
+                                },
+                                _ => ()
+                            }
+                        }
+                    }
+                }
+                _ => (),
+            };
+        }
     }
 
-    pub fn create_new_user() -> UserHandle {
+    pub async fn create_new_user(&mut self) -> io::Result<UserHandle> {
         let secret_key = SecretKey::random();
         let public_key: PublicKey = secret_key.clone().into();
         let created_at: u64 = Utc::now().timestamp().try_into().unwrap();
@@ -126,15 +170,14 @@ impl App {
         io::stdin().read_line(&mut description).unwrap();
         description = description.trim().to_string();
 
-        let signature = secret_key
-            .sign(
-                &[
-                    name.as_bytes(),
-                    &created_at.to_le_bytes(),
-                    description.as_bytes(),
-                ]
-                .concat(),
-            );
+        let signature = secret_key.sign(
+            &[
+                name.as_bytes(),
+                &created_at.to_le_bytes(),
+                description.as_bytes(),
+            ]
+            .concat(),
+        );
 
         let user_attr = UserAttribute::new(
             public_key.into(),
@@ -145,7 +188,26 @@ impl App {
         )
         .unwrap();
 
-        UserHandle::new(user_attr, secret_key.into(), &Vec::new(), &Vec::new())
+        let user_handle =
+            UserHandle::new(user_attr, secret_key.into(), HashMap::new(), &Vec::new());
+        self.user_handles.push(user_handle.clone());
+
+        let mut userfile = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open("users")
+            .await?;
+        userfile.set_len(0).await?;
+        userfile
+            .write_all(
+                serde_json::to_string(&self.user_handles)
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .await?;
+
+        Ok(user_handle)
     }
 
     pub async fn run(&mut self) -> io::Result<()> {

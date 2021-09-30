@@ -1,9 +1,55 @@
-use crate::{crypto::*, util::base64::Base64Error};
 use crate::kad::Key;
 use crate::util::base64;
+use crate::{crypto::*, util::base64::Base64Error};
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use thiserror::Error;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SignedUserAttribute {
+    pub addr: Address,
+    pub attr: UserAttribute,
+    pub signature: Vec<u8>, // 64 bytes
+}
+
+impl SignedUserAttribute {
+    pub fn verify(&self, pubkey: &PublicKey) -> Result<(), VerifyError> {
+        let addr = Address::from(pubkey.clone());
+
+        if self.addr != addr {
+            Err(VerifyError::Address)
+        } else {
+            if self.signature.len() != 64 {
+                Err(VerifyError::Size)
+            } else {
+                pubkey
+                    .verify(
+                        &self.signature[..].try_into().unwrap(),
+                        &serde_json::to_vec(&self.attr).unwrap(),
+                    )
+                    .map_err(|e| VerifyError::Signature(e))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DecodeError {
+    #[error("Invalid size")]
+    Size,
+    #[error("Invalid message")]
+    Message,
+}
+
+#[derive(Debug, Error)]
+pub enum VerifyError {
+    #[error("Invalid address")]
+    Address,
+    #[error("Invalid signature")]
+    Signature(Ed25519Error),
+    #[error("Invalid size")]
+    Size,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserAttribute {
@@ -51,10 +97,7 @@ pub struct Address {
 
 impl Address {
     pub fn new(address: [u8; 32]) -> Address {
-        Address {
-            prefix: 0,
-            address,
-        }
+        Address { prefix: 0, address }
     }
 
     pub fn from_str(s: &str) -> Result<Address, AddressError> {
@@ -98,7 +141,7 @@ impl Address {
             .unwrap()
     }
 
-    fn hash(data: [u8;32]) -> [u8; 32] {
+    fn hash(data: [u8; 32]) -> [u8; 32] {
         // sha3 -> blake2s -> sha3 -> blake2s
         Address::blake2s(&Address::blake2s(&Address::sha3(&Address::sha3(&data))))
     }
@@ -145,7 +188,7 @@ impl From<Address> for Key {
     }
 }
 
-#[derive(Debug,Error)]
+#[derive(Debug, Error)]
 pub enum AddressError {
     #[error("Invalid length")]
     Length,

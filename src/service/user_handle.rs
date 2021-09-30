@@ -1,12 +1,14 @@
-use crate::user::post::Post;
+use std::collections::HashMap;
+
 use crate::user::user::UserAttribute;
+use crate::user::{post::Post, user::Address};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserHandle {
     pub user_attr: UserAttribute,
     pub signing_key: [u8; 32],
-    pub following: Vec<UserAttribute>,
+    pub followings: HashMap<Address, UserAttribute>,
     pub posts: Vec<Post>,
 }
 
@@ -14,13 +16,13 @@ impl UserHandle {
     pub fn new(
         user_info: UserAttribute,
         secret_key: [u8; 32],
-        following: &[UserAttribute],
+        followings: HashMap<Address,UserAttribute>,
         posts: &[Post],
     ) -> UserHandle {
         UserHandle {
             user_attr: user_info,
             signing_key: secret_key,
-            following: following.to_vec(),
+            followings,
             posts: posts.to_vec(),
         }
     }
