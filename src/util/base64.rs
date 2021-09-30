@@ -1,3 +1,5 @@
+use thiserror::Error;
+
 const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn substitute(bits: u8) -> u8 {
@@ -5,11 +7,11 @@ fn substitute(bits: u8) -> u8 {
     TABLE[bits as usize]
 }
 
-fn inv_substitute(c: u8) -> Result<u8, &'static str> {
+fn inv_substitute(c: u8) -> Result<u8, Base64Error> {
     if c.is_ascii_alphanumeric() || c == b'+' || c == b'/' {
         Ok(TABLE.iter().position(|x| *x == c).unwrap() as u8)
     } else {
-        Err("not a base64 character!")
+        Err(Base64Error::Character(c))
     }
 }
 
@@ -50,7 +52,7 @@ pub fn encode(data: &[u8]) -> Vec<u8> {
     s
 }
 
-pub fn decode(data: &[u8]) -> Result<Vec<u8>, &'static str> {
+pub fn decode(data: &[u8]) -> Result<Vec<u8>, Base64Error> {
     let mut v = Vec::new();
 
     if data.is_empty() {
@@ -86,6 +88,12 @@ pub fn decode(data: &[u8]) -> Result<Vec<u8>, &'static str> {
     }
 
     Ok(v)
+}
+
+#[derive(Debug,Error)]
+pub enum Base64Error {
+    #[error("Not a Base64 character!")]
+    Character(u8),
 }
 
 #[cfg(test)]

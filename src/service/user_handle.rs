@@ -1,20 +1,25 @@
-use crate::{account::user::UserInfo};
-use crate::account::post::Post;
-use serde::{Serialize,Deserialize};
+use crate::user::post::Post;
+use crate::user::user::UserAttribute;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug,Clone, PartialEq, Eq,Hash,Serialize,Deserialize)]
-pub struct  UserHandle {
-    pub user_info: UserInfo,
-    pub secret_key: [u8;32],
-    pub following: Vec<UserInfo>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UserHandle {
+    pub user_attr: UserAttribute,
+    pub signing_key: [u8; 32],
+    pub following: Vec<UserAttribute>,
     pub posts: Vec<Post>,
 }
 
 impl UserHandle {
-    pub fn new(user_info: UserInfo, secret_key: [u8;32], following: &[UserInfo], posts: &[Post]) -> UserHandle {
+    pub fn new(
+        user_info: UserAttribute,
+        secret_key: [u8; 32],
+        following: &[UserAttribute],
+        posts: &[Post],
+    ) -> UserHandle {
         UserHandle {
-            user_info,
-            secret_key,
+            user_attr: user_info,
+            signing_key: secret_key,
             following: following.to_vec(),
             posts: posts.to_vec(),
         }

@@ -1,6 +1,6 @@
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -12,6 +12,7 @@ use crate::kad::TOKEN_KEY_LEN;
 use super::key::Key;
 use super::routing::{NodeInfo, RoutingTable};
 use super::rpc::{ReqHandle, Rpc};
+use super::store::Store;
 use super::{BROADCAST_TIME_OUT, K_PARAM};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,8 +43,7 @@ pub enum Reply {
 pub struct Node {
     key_length: usize,
     routes: Arc<Mutex<RoutingTable>>,
-    store: Arc<Mutex<HashMap<Key, Vec<u8>>>>,
-    store_predicate: Arc<dyn Fn(&[u8]) -> bool + Sync + Send>,
+    store: Arc<Mutex<Store>>,
     broadcast_tokens: Arc<Mutex<HashSet<Key>>>,
     rpc: Arc<Mutex<Rpc>>,
     tx: UnboundedSender<Vec<u8>>,
@@ -58,7 +58,7 @@ impl Node {
         store_requirement: Arc<dyn Fn(&[u8]) -> bool + Sync + Send>,
         rpc: Arc<Mutex<Rpc>>,
         multicast_tx: UnboundedSender<Vec<u8>>,
-        bootstrap: Option<NodeInfo>,
+        bootstrap: &[NodeInfo],
     ) -> Node {
         assert_eq!(key_length, node_id.len());
         let (tx, rx) = mpsc::unbounded_channel();
@@ -76,8 +76,8 @@ impl Node {
         drop(rpc_raw);
 
         let mut routes = RoutingTable::new(key_length, &node_info.clone());
-        if let Some(bootstrap) = bootstrap {
-            routes.update(bootstrap);
+        for ni in bootstrap.iter() {
+            routes.update(ni.clone());
         }
 
         info!(
@@ -88,8 +88,7 @@ impl Node {
         let node = Node {
             key_length,
             routes: Arc::new(Mutex::new(routes)),
-            store: Arc::new(Mutex::new(HashMap::new())),
-            store_predicate: store_requirement,
+            store: Arc::new(Mutex::new(Store::new(key_length, store_requirement))),
             broadcast_tokens: Arc::new(Mutex::new(HashSet::new())),
             rpc: rpc.clone(),
             tx: multicast_tx,
@@ -144,10 +143,7 @@ impl Node {
                     println!("INFO: Store request which has invalid key length, ignoring.");
                 } else {
                     let mut store = self.store.lock().await;
-                    // check whether the value is valid
-                    if (self.store_predicate)(&v) {
-                        store.insert(k, v);
-                    }
+                    store.insert(k, v).unwrap_or_default();
                 }
                 Reply::Ping
             }
@@ -186,7 +182,7 @@ impl Node {
             }
             Request::Unicast(msg) => {
                 if let Err(_) = self.tx.send(msg) {
-                        info!("Closing channel, since receiver is dead.");
+                    info!("Closing channel, since receiver is dead.");
                 }
 
                 Reply::Ping

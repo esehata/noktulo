@@ -1,8 +1,8 @@
 use chrono::Utc;
-use noktulo::account::user::UserInfo;
-use noktulo::crypto::SecretKey;
+use noktulo::crypto::{PublicKey, SecretKey};
 use noktulo::kad::*;
-use noktulo::service::{TESTNET_USER_DHT, UserHandle};
+use noktulo::service::{Publisher, Subscriber, UserDHT, UserHandle, TESTNET_USER_DHT};
+use noktulo::user::user::{Address, UserAttribute};
 use serde_json;
 use std::convert::TryInto;
 use std::io;
@@ -17,15 +17,15 @@ use tokio::sync::Mutex;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger::init();
-    let mut app = Noktulo::new();
+    let mut app = App::new();
     app.run().await
 }
 
-struct Noktulo {}
+struct App {}
 
-impl Noktulo {
-    pub fn new() -> Noktulo {
-        Noktulo {}
+impl App {
+    pub fn new() -> App {
+        App {}
     }
 
     pub async fn cli(bootstrap: Option<SocketAddr>) -> io::Result<()> {
@@ -42,7 +42,7 @@ impl Noktulo {
         loop {
             println!("Select a user:");
             for (i, u) in users.iter().enumerate() {
-                println!("[{}] {}", i, u.user_info.name);
+                println!("[{}] {}", i, u.user_attr.name);
             }
             println!(
                 r"or
@@ -60,46 +60,9 @@ impl Noktulo {
 
             if index < users.len() {
                 let user_handle = users[index].clone();
-                Noktulo::timeline(user_handle, bootstrap).await;
+                App::timeline(user_handle, bootstrap).await;
             } else if index == users.len() {
-                let secret_key = SecretKey::random();
-                let public_key = secret_key.get_pubkey();
-                let created_at: u64 = Utc::now().timestamp().try_into().unwrap();
-                let mut name = String::new();
-                let mut description = String::new();
-
-                print!("Name: ");
-                io::stdin().read_line(&mut name).unwrap();
-                name = name.trim().to_string();
-                print!("Profile: ");
-                io::stdin().read_line(&mut description).unwrap();
-                description = description.trim().to_string();
-
-                let signature = secret_key
-                    .sign(
-                        &[
-                            name.as_bytes(),
-                            &created_at.to_le_bytes(),
-                            description.as_bytes(),
-                        ]
-                        .concat(),
-                    )
-                    .unwrap();
-                let user_info = UserInfo::new(
-                    public_key.to_bytes(),
-                    &name,
-                    created_at,
-                    &description,
-                    signature,
-                )
-                .unwrap();
-                let user_handle = UserHandle::new(
-                    user_info,
-                    secret_key.to_bytes(),
-                    &Vec::new(),
-                    &Vec::new(),
-                );
-
+                let user_handle = App::create_new_user();
                 users.push(user_handle);
                 userfile.set_len(0).await?;
                 userfile
@@ -116,7 +79,73 @@ impl Noktulo {
     }
 
     pub async fn timeline(user_handle: UserHandle, bootstrap: Option<SocketAddr>) {
+        let mut bootstrap_nodeinfo = Vec::new();
+        if let Some(addr) = bootstrap {
+            let ret = Rpc::get_nodeinfos(addr).await;
+            if let Ok(v) = ret {
+                bootstrap_nodeinfo = v;
+            }
+        }
 
+        let user_dht_bootstrap: Vec<_> = bootstrap_nodeinfo
+            .iter()
+            .filter(|ni| ni.id.len() == 32)
+            .cloned()
+            .collect();
+
+        let pubsub_dht_bootstrap: Vec<_> = bootstrap_nodeinfo
+            .iter()
+            .filter(|ni| ni.id.len() == 64)
+            .cloned()
+            .collect();
+
+        let socket = UdpSocket::bind("0.0.0.0:6270").await.unwrap();
+        let rpc = Arc::new(Mutex::new(Rpc::new(socket)));
+
+        let user_dht = UserDHT::start(rpc.clone(), &user_dht_bootstrap).await;
+
+        let addr = Address::from(PublicKey::from(SecretKey::from(user_handle.signing_key)));
+
+        let publisher = Publisher::new(addr, rpc.clone(), &pubsub_dht_bootstrap).await;
+        let subscriber = Subscriber::new(rpc.clone(), &bootstrap_nodeinfo).await;
+
+
+    }
+
+    pub fn create_new_user() -> UserHandle {
+        let secret_key = SecretKey::random();
+        let public_key: PublicKey = secret_key.clone().into();
+        let created_at: u64 = Utc::now().timestamp().try_into().unwrap();
+        let mut name = String::new();
+        let mut description = String::new();
+
+        print!("Name: ");
+        io::stdin().read_line(&mut name).unwrap();
+        name = name.trim().to_string();
+        print!("Profile: ");
+        io::stdin().read_line(&mut description).unwrap();
+        description = description.trim().to_string();
+
+        let signature = secret_key
+            .sign(
+                &[
+                    name.as_bytes(),
+                    &created_at.to_le_bytes(),
+                    description.as_bytes(),
+                ]
+                .concat(),
+            );
+
+        let user_attr = UserAttribute::new(
+            public_key.into(),
+            &name,
+            created_at,
+            &description,
+            signature,
+        )
+        .unwrap();
+
+        UserHandle::new(user_attr, secret_key.into(), &Vec::new(), &Vec::new())
     }
 
     pub async fn run(&mut self) -> io::Result<()> {
@@ -126,13 +155,13 @@ impl Noktulo {
         input.read_line(&mut buffer).unwrap();
         let params = buffer.trim_end().split(' ').collect::<Vec<_>>();
         let bootstrap = if params.len() < 2 {
-            None
+            Vec::new()
         } else {
-            Some(NodeInfo {
+            vec![NodeInfo {
                 id: Key::from(params[1]),
                 addr: params[0].parse().unwrap(),
                 net_id: String::from(TESTNET_USER_DHT),
-            })
+            }]
         };
 
         buffer.clear();
@@ -157,7 +186,7 @@ impl Noktulo {
             Arc::new(|_| true),
             rpc.clone(),
             tx,
-            bootstrap,
+            &bootstrap,
         )
         .await;
 

@@ -2,6 +2,7 @@ mod node;
 mod rpc;
 mod routing;
 mod key;
+mod store;
 
 pub use node::Node;
 pub use key::Key;

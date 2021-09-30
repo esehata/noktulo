@@ -1,27 +1,26 @@
-use crate::crypto::*;
+use crate::{crypto::*, util::base64::Base64Error};
+use crate::kad::Key;
 use crate::util::base64;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub public_key: [u8; 32],
-    pub address: Address,
+pub struct UserAttribute {
     pub name: String,
     pub created_at: u64,
     pub description: String,
-    pub signature: Vec<u8>, // 64 bytes, Sign(name|created_at|description)
 }
 
-impl UserInfo {
+impl UserAttribute {
     pub fn new(
         public_key: [u8; 32],
         name: &str,
         created_at: u64,
         description: &str,
         signature: [u8; 64],
-    ) -> Result<UserInfo, &'static str> {
-        if PublicKey::from_bytes(&public_key)
+    ) -> Result<UserAttribute, Ed25519Error> {
+        if PublicKey::from_bytes(&public_key)?
             .verify(
                 &signature,
                 &[
@@ -31,17 +30,14 @@ impl UserInfo {
                 ]
                 .concat(),
             )
-            .unwrap()
+            .is_ok()
         {
-            Err("Invalid signature!")
+            Err(Ed25519Error::Signature)
         } else {
-            Ok(UserInfo {
-                public_key: public_key,
+            Ok(UserAttribute {
                 name: name.to_string(),
-                address: Address::from_public_key(&PublicKey::from_bytes(&public_key)),
                 created_at,
                 description: description.to_string(),
-                signature: signature.to_vec(),
             })
         }
     }
@@ -49,63 +45,45 @@ impl UserInfo {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
-    version: u8,
+    prefix: u8,
     address: [u8; 32],
 }
 
 impl Address {
-    pub fn new(address: [u8;32]) -> Address {
-        Address{
-            version:0,
+    pub fn new(address: [u8; 32]) -> Address {
+        Address {
+            prefix: 0,
             address,
         }
     }
 
-    pub fn from_public_key(pubkey: &PublicKey) -> Address {
-        Address {
-            version: 0,
-            address: Address::hash(&pubkey.to_bytes()),
-        }
-    }
-
-    pub fn from_string(s: &str) -> Result<Address, &'static str> {
+    pub fn from_str(s: &str) -> Result<Address, AddressError> {
         match base64::decode(s.as_bytes()) {
             Ok(b) => {
                 if b.len() != 37 {
-                    Err("Invalid length")
+                    Err(AddressError::Length)
                 } else {
                     let version = b[0];
                     let addr = &b[1..33];
                     let checksum = &b[33..];
                     let ret = Address {
-                        version: version,
+                        prefix: version,
                         address: addr.try_into().unwrap(),
                     };
                     if checksum != ret.check_sum() {
-                        Err("Invalid checksum")
+                        Err(AddressError::Checksum)
                     } else {
                         Ok(ret)
                     }
                 }
             }
-            Err(e) => Err(e),
+            Err(e) => Err(AddressError::Base64(e)),
         }
-    }
-
-    pub fn from_bytes(b: [u8;33]) -> Address {
-        let version = b[0];
-        let address = &b[1..];
-        Address { version, address:address.try_into().unwrap() }
-    }
-
-    pub fn to_bytes(&self) -> [u8;33] {
-        let a = self.version.to_le_bytes();
-        [&a[..], &self.address.to_vec()].concat().try_into().unwrap()
     }
 
     pub fn to_string(&self) -> String {
         let payload = [
-            &self.version.to_le_bytes()[..],
+            &self.prefix.to_le_bytes()[..],
             &self.address,
             &self.check_sum()[..],
         ]
@@ -114,15 +92,15 @@ impl Address {
     }
 
     fn check_sum(&self) -> [u8; 4] {
-        let payload = [&self.version.to_le_bytes()[..], &self.address].concat();
+        let payload = [&self.prefix.to_le_bytes()[..], &self.address].concat();
         Address::sha3(&Address::sha3(&payload))[..4]
             .try_into()
             .unwrap()
     }
 
-    fn hash(data: &[u8]) -> [u8; 32] {
+    fn hash(data: [u8;32]) -> [u8; 32] {
         // sha3 -> blake2s -> sha3 -> blake2s
-        Address::blake2s(&Address::blake2s(&Address::sha3(&Address::sha3(data))))
+        Address::blake2s(&Address::blake2s(&Address::sha3(&Address::sha3(&data))))
     }
 
     fn sha3(data: &[u8]) -> [u8; 64] {
@@ -134,4 +112,45 @@ impl Address {
         use blake2::{Blake2s, Digest as blake2digest};
         Blake2s::digest(data).as_slice().try_into().unwrap()
     }
+}
+
+impl From<PublicKey> for Address {
+    fn from(pubkey: PublicKey) -> Address {
+        Address {
+            prefix: 0,
+            address: Address::hash(pubkey.into()),
+        }
+    }
+}
+
+impl From<[u8; 32]> for Address {
+    fn from(b: [u8; 32]) -> Address {
+        Address {
+            prefix: 0,
+            address: b[..].try_into().unwrap(),
+        }
+    }
+}
+
+impl From<Address> for [u8; 32] {
+    fn from(addr: Address) -> [u8; 32] {
+        addr.address
+    }
+}
+
+impl From<Address> for Key {
+    fn from(addr: Address) -> Key {
+        let b: [u8; 32] = addr.into();
+        Key::from(&b[..])
+    }
+}
+
+#[derive(Debug,Error)]
+pub enum AddressError {
+    #[error("Invalid length")]
+    Length,
+    #[error("Invalid checksum")]
+    Checksum,
+    #[error("Invalid character")]
+    Base64(Base64Error),
 }

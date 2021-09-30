@@ -1,11 +1,11 @@
-use crate::account::user::Address;
 use crate::crypto::PublicKey;
 use crate::kad::Key;
 use crate::kad::{Node, NodeInfo, Rpc};
+use crate::user::message::UserMessage;
+use crate::user::user::Address;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::Mutex;
@@ -13,19 +13,11 @@ use tokio::sync::Mutex;
 use super::{PUBSUB_DHT_KEY_LENGTH, TESTNET_PUBSUB_DHT, TESTNET_USER_DHT, USER_DHT_KEY_LENGTH};
 
 pub struct UserDHT {
-    rpc: Arc<Mutex<Rpc>>,
     user_dht: Arc<Node>,
-    bootstrap: Option<NodeInfo>,
 }
 
 impl UserDHT {
-    pub async fn start(port: u16, bootstrap: Option<NodeInfo>) -> UserDHT {
-        let socket = UdpSocket::bind("0.0.0.0:".to_string() + &port.to_string())
-            .await
-            .unwrap();
-
-        let rpc = Arc::new(Mutex::new(Rpc::new(socket)));
-
+    pub async fn start(rpc: Arc<Mutex<Rpc>>, bootstrap: &[NodeInfo]) -> UserDHT {
         // As of now, rx is not used
         let (tx, _rx) = mpsc::unbounded_channel();
 
@@ -41,9 +33,7 @@ impl UserDHT {
         .await;
 
         UserDHT {
-            rpc,
             user_dht: Arc::new(user_dht),
-            bootstrap: bootstrap,
         }
     }
 
@@ -51,19 +41,34 @@ impl UserDHT {
         if data.len() != 65 {
             false
         } else {
-            let addr_bytes = &data[..33];
-            let addr = Address::from_bytes(addr_bytes.try_into().unwrap());
-            let pk = PublicKey::from_bytes(&data[33..].try_into().unwrap());
-            let addr2 = Address::from_public_key(&pk);
-            addr == addr2
+            let addr_bytes: [u8; 32] = data[..32].try_into().unwrap();
+            let addr: Address = addr_bytes.into();
+            if let Ok(pk) = PublicKey::from_bytes(&data[32..].try_into().unwrap()) {
+                let addr2 = Address::from(pk);
+                addr == addr2
+            } else {
+                false
+            }
         }
     }
 
     pub async fn register_pubkey(&self, pubkey: &PublicKey) {
-        let addr = Address::from_public_key(pubkey);
-        let addr_key_pair = [&addr.to_bytes()[..], &pubkey.to_bytes()].concat();
-        let key = Key::from_bytes(&addr.to_bytes());
+        let addr_bytes: [u8; 32] = Address::from(pubkey.clone()).into();
+        let pk_bytes: [u8; 32] = pubkey.clone().into();
+        let addr_key_pair = [&addr_bytes[1..], &pk_bytes].concat();
+        let key = Key::from(&addr_bytes[1..]);
         self.user_dht.put(key, &addr_key_pair).await;
+    }
+
+    pub async fn get_pubkey(&self, addr: Address) -> Option<PublicKey> {
+        let key = Key::from(addr);
+        if let Some(bytes) = self.user_dht.get(key).await {
+            if UserDHT::is_valid_addr_pubkey_pair(&bytes) {
+                return Some(PublicKey::from_bytes(&bytes[32..].try_into().unwrap()).unwrap());
+            }
+        }
+
+        None
     }
 }
 
@@ -73,12 +78,8 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    pub async fn new(
-        addr: Address,
-        rpc: Arc<Mutex<Rpc>>,
-        bootstrap: Option<NodeInfo>,
-    ) -> Publisher {
-        let mut id = Key::from_bytes(&addr.to_bytes());
+    pub async fn new(addr: Address, rpc: Arc<Mutex<Rpc>>, bootstrap: &[NodeInfo]) -> Publisher {
+        let mut id: Key = addr.into();
         id.resize(PUBSUB_DHT_KEY_LENGTH);
         let (tx, rx) = mpsc::unbounded_channel();
         let node = Node::start(
@@ -103,7 +104,7 @@ impl Publisher {
     }
 
     pub async fn publish(&self, msg: &[u8], dst: &Address) {
-        let key = Key::from_bytes(&dst.to_bytes());
+        let key = Key::from(dst.clone());
         self.node.multicast(&key, msg).await;
     }
 }
@@ -113,23 +114,23 @@ pub struct Subscriber {
     nodes: Arc<Mutex<HashMap<Address, Node>>>,
     rx: UnboundedReceiver<Vec<u8>>,
     tx: UnboundedSender<Vec<u8>>,
-    bootstrap: Option<NodeInfo>,
+    bootstrap: Vec<NodeInfo>,
 }
 
 impl Subscriber {
-    pub async fn new(rpc: Arc<Mutex<Rpc>>, bootstrap: Option<NodeInfo>) -> Subscriber {
+    pub async fn new(rpc: Arc<Mutex<Rpc>>, bootstrap: &[NodeInfo]) -> Subscriber {
         let (tx, rx) = mpsc::unbounded_channel();
         Subscriber {
             rpc,
             nodes: Arc::new(Mutex::new(HashMap::new())),
             rx,
             tx,
-            bootstrap,
+            bootstrap: bootstrap.to_vec(),
         }
     }
 
     pub async fn subscribe(&self, addr: Address) {
-        let mut id = Key::from_bytes(&addr.to_bytes());
+        let mut id = Key::from(addr.clone());
         id.resize_with_random(PUBSUB_DHT_KEY_LENGTH);
         let mut nodes = self.nodes.lock().await;
         if nodes.contains_key(&addr) {
@@ -142,15 +143,22 @@ impl Subscriber {
                     Arc::new(|_| false),
                     self.rpc.clone(),
                     self.tx.clone(),
-                    self.bootstrap.clone(),
+                    &self.bootstrap,
                 )
                 .await,
             );
         }
     }
 
-    pub async fn rx(&mut self) -> &mut UnboundedReceiver<Vec<u8>> {
-        &mut self.rx
+    pub async fn get_new_message(&mut self) -> Vec<UserMessage> {
+        let mut res = Vec::new();
+        while let Ok(bytes) = self.rx.try_recv() {
+            if let Ok(msg) = UserMessage::decode(&bytes[..]) {
+                res.push(msg);
+            }
+        }
+
+        res
     }
 
     pub async fn stop_subscription(&self, addr: &Address) {

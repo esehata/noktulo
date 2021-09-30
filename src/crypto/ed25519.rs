@@ -4,8 +4,9 @@ use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use sha3::{Digest, Sha3_512};
 use std::convert::TryInto;
-use std::ops::{Add, Sub};
 use std::fmt;
+use std::ops::{Add, Sub};
+use thiserror::Error;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct SecretKey {
@@ -13,35 +14,13 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
-    pub fn from_bytes(bytes: [u8; 32]) -> SecretKey {
-        SecretKey { sk: bytes }
-    }
-
     pub fn random() -> SecretKey {
         let mut sk = [0; 32];
         ChaCha20Rng::from_entropy().fill_bytes(&mut sk);
         SecretKey { sk }
     }
 
-    pub fn to_bytes(&self) -> [u8; 32] {
-        self.sk
-    }
-
-    pub fn get_pubkey(&self) -> PublicKey {
-        let h = Sha3_512::new().chain(self.sk).finalize();
-        let mut a = BigUint::from_bytes_le(&h[..32]);
-        a.set_bit(0, false);
-        a.set_bit(1, false);
-        a.set_bit(2, false);
-        a.set_bit(254, true);
-        a.set_bit(255, false);
-
-        PublicKey {
-            pk: Ed25519Point::bp().scalar_mul(a),
-        }
-    }
-
-    pub fn sign<'a>(&self, message: &[u8]) -> Result<[u8; 64], &'a str> {
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         let bp = Ed25519Point::bp();
 
         let h = Sha3_512::new().chain(self.sk).finalize();
@@ -66,17 +45,29 @@ impl SecretKey {
         let v = (r + k * s) % Ed25519Point::l();
         let mut _s = v.to_bytes_le();
         _s.resize(32, 0);
-        Ok([rb.encode(), _s.try_into().unwrap()]
+        [rb.encode(), _s.try_into().unwrap()]
             .concat()
             .try_into()
-            .unwrap())
+            .unwrap()
     }
 }
 
 impl fmt::Debug for SecretKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(),fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         let masked = format!("This data doesn't display for privacy");
-        f.debug_struct("SecretKey").field("sk",&masked).finish()
+        f.debug_struct("SecretKey").field("sk", &masked).finish()
+    }
+}
+
+impl From<[u8;32]> for SecretKey {
+    fn from(bytes: [u8;32]) -> SecretKey {
+        SecretKey { sk: bytes }
+    }
+}
+
+impl From<SecretKey> for [u8;32] {
+    fn from(sk: SecretKey) -> [u8;32] {
+        sk.sk
     }
 }
 
@@ -86,17 +77,13 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn from_bytes(bytes: &[u8; 32]) -> PublicKey {
-        PublicKey {
-            pk: Ed25519Point::decode(&bytes).unwrap(),
-        }
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<PublicKey, Ed25519Error> {
+        Ok(PublicKey {
+            pk: Ed25519Point::decode(&bytes)?,
+        })
     }
 
-    pub fn to_bytes(&self) -> [u8; 32] {
-        self.pk.encode()
-    }
-
-    pub fn verify(&self, signature: &[u8; 64], m: &[u8]) -> Result<bool, &str> {
+    pub fn verify(&self, signature: &[u8; 64], m: &[u8]) -> Result<(), Ed25519Error> {
         let r = Ed25519Point::decode(signature[..32].try_into().unwrap())?;
         let s = BigUint::from_bytes_le(&signature[32..]);
         let h = BigUint::from_bytes_le(
@@ -108,10 +95,38 @@ impl PublicKey {
         let _8 = 8.to_biguint().unwrap();
 
         // 8*s*b = 8*r + 8*h*a
-        Ok(Ed25519Point::bp().scalar_mul(_8.clone() * s)
-            == r.scalar_mul(_8.clone()) + self.pk.clone().scalar_mul(_8.clone() * h))
+        if Ed25519Point::bp().scalar_mul(_8.clone() * s)
+            == r.scalar_mul(_8.clone()) + self.pk.clone().scalar_mul(_8.clone() * h)
+        {
+            Ok(())
+        } else {
+            Err(Ed25519Error::Signature)
+        }
     }
 }
+
+impl From<SecretKey> for PublicKey {
+    fn from(sk: SecretKey) -> PublicKey {
+        let h = Sha3_512::new().chain(sk.sk).finalize();
+        let mut a = BigUint::from_bytes_le(&h[..32]);
+        a.set_bit(0, false);
+        a.set_bit(1, false);
+        a.set_bit(2, false);
+        a.set_bit(254, true);
+        a.set_bit(255, false);
+
+        PublicKey {
+            pk: Ed25519Point::bp().scalar_mul(a),
+        }
+    }
+}
+
+impl From<PublicKey> for [u8;32] {
+    fn from(pk: PublicKey) -> [u8;32] {
+        pk.pk.encode()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Ed25519Point {
     x: FiniteField,
@@ -163,7 +178,7 @@ impl Ed25519Point {
         n.to_bytes_le().try_into().unwrap()
     }
 
-    pub fn decode(bytes: &[u8; 32]) -> Result<Ed25519Point, &'static str> {
+    pub fn decode(bytes: &[u8; 32]) -> Result<Ed25519Point, Ed25519Error> {
         // constants
         let q = Ed25519Point::q();
         let d = Ed25519Point::d();
@@ -182,7 +197,7 @@ impl Ed25519Point {
 
         if x2 == _0 {
             if sign {
-                return Err("invalid sign of encode point");
+                return Err(Ed25519Error::Sign);
             }
         }
 
@@ -193,7 +208,7 @@ impl Ed25519Point {
             x = x.clone() * _2.pow(&((q.clone() - 1u8) / 4u8)); // x = x*2^((q-1)/4)
             if (x.clone().pow(_2.num()) - x2) != _0 {
                 // x^2 - x2 != 0
-                return Err("invalid square of encode point");
+                return Err(Ed25519Error::Square);
             }
         }
         if x.num().bit(0) != sign {
@@ -272,6 +287,16 @@ impl Sub for Ed25519Point {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum Ed25519Error {
+    #[error("Invalid sign of the encode point")]
+    Sign,
+    #[error("Invalid square of the encode point")]
+    Square,
+    #[error("Invalid signature")]
+    Signature,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,12 +311,12 @@ mod tests {
     #[test]
     fn test_keygen_sign_verify() {
         let sk = SecretKey::random();
-        let pk = sk.get_pubkey();
+        let pk:PublicKey = sk.clone().into();
         let m = "hello";
-        let signature = sk.sign(m.as_bytes()).unwrap();
+        let signature = sk.sign(m.as_bytes());
         assert!(pk
             .verify(&signature.try_into().unwrap(), m.as_bytes())
-            .unwrap());
+            .is_ok());
     }
 
     #[test]
