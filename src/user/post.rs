@@ -1,15 +1,18 @@
 use super::user::{Address, UserAttribute};
 use crate::crypto::Ed25519Error;
 use crate::crypto::PublicKey;
+use chrono::Local;
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
+use std::fmt;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SignedPost {
     pub addr: Address,
     pub post: Post,
-    pub signature: Vec<u8>, // 64 bytes
+    pub signature: Vec<u8>, // 64 bytes, signature of json of post
 }
 
 impl SignedPost {
@@ -33,12 +36,19 @@ impl SignedPost {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum DecodeError {
-    #[error("Invalid size")]
-    Size,
-    #[error("Invalid message")]
-    Message,
+impl fmt::Display for SignedPost {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} @{} [{}]:\n{}",
+            self.post.user_attr.name,
+            self.addr.to_string(),
+            Local
+                .timestamp(self.post.created_at as i64, 0)
+                .format("%Y/%m/%d %H:%M:%S"),
+            self.post
+        )
+    }
 }
 
 #[derive(Debug, Error)]
@@ -53,29 +63,56 @@ pub enum VerifyError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Post {
-    pub user: UserAttribute,
+    pub user_attr: UserAttribute,
     pub id: u128,
-    pub post_bytes: Vec<u8>, // serialized data of Post
+    pub content: PostKind,
     pub created_at: u64,
+}
+
+impl fmt::Display for Post {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.content {
+            PostKind::Hoot(hoot) => {
+                write!(f, "{}", hoot)
+            }
+            PostKind::ReHoot(sigpost) => {
+                write!(f, "\"{}\"", sigpost)
+            }
+            PostKind::Delete(id) => {
+                write!(f, "DELETE HOOT ID: {}", id)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PostKind {
     Hoot(Hoot),
-    ReHoot(SignedPost),
+    ReHoot(Box<SignedPost>),
     Delete(u128),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Hoot {
     pub text: String,
-    pub quoted_posts: Option<Post>,
-    pub reply_to: Option<ReplyTo>,
-    pub mention_to: Option<Vec<Address>>,
+    pub quoted_posts: Option<Box<SignedPost>>,
+    pub reply_to: Option<Box<SignedPost>>,
+    pub mention_to: Vec<Address>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReplyTo {
-    pub reply_to_user: UserAttribute,
-    pub reply_to_id: [u8; 32],
+impl fmt::Display for Hoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(to) = &self.quoted_posts {
+            let _ = writeln!(f, "\"{}\"", to);
+        }
+        if let Some(to) = &self.reply_to {
+            let _ = write!(f, "@{} ", to.addr.to_string());
+        }
+        for to in self.mention_to.iter() {
+            let _ = write!(f, "@{} ", to.to_string());
+        }
+        let _ = writeln!(f, "");
+
+        writeln!(f, "{}", self.text)
+    }
 }

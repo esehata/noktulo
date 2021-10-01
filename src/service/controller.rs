@@ -5,21 +5,19 @@ use tokio::{net::UdpSocket, sync::Mutex};
 use crate::{
     crypto::PublicKey,
     kad::{NodeInfo, Rpc},
-    service::{
-        Publisher, Subscriber, UserDHT, UserHandle, PUBSUB_DHT_KEY_LENGTH, USER_DHT_KEY_LENGTH,
-    },
+    service::{Publisher, Subscriber, UserDHT, PUBSUB_DHT_KEY_LENGTH, USER_DHT_KEY_LENGTH},
     user::user::Address,
 };
 
-pub struct Noktulo {
+pub struct NetworkController {
     rpc: Arc<Mutex<Rpc>>,
 
     user_dht: UserDHT,
     pubsub_dht_bootstrap: Vec<NodeInfo>,
 }
 
-impl Noktulo {
-    pub async fn init(config: Config) -> Noktulo {
+impl NetworkController {
+    pub async fn init(config: Config) -> NetworkController {
         let mut bootstrap_nodeinfo = Vec::new();
         for addr in config.bootstrap {
             let ret = Rpc::get_nodeinfos(addr).await;
@@ -47,7 +45,7 @@ impl Noktulo {
 
         let user_dht = UserDHT::start(Arc::new(Mutex::new(rpc.clone())), &user_dht_bootstrap).await;
 
-        Noktulo {
+        NetworkController {
             rpc: Arc::new(Mutex::new(rpc)),
             user_dht,
             pubsub_dht_bootstrap,

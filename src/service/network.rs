@@ -1,7 +1,7 @@
 use crate::crypto::PublicKey;
 use crate::kad::Key;
 use crate::kad::{Node, NodeInfo, Rpc};
-use crate::user::message::UserMessage;
+use crate::user::post::SignedPost;
 use crate::user::user::Address;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -150,10 +150,10 @@ impl Subscriber {
         }
     }
 
-    pub async fn get_new_message(&mut self) -> Vec<UserMessage> {
+    pub async fn get_new_message(&mut self) -> Vec<SignedPost> {
         let mut res = Vec::new();
         while let Ok(bytes) = self.rx.try_recv() {
-            if let Ok(msg) = UserMessage::decode(&bytes[..]) {
+            if let Ok(msg) = serde_json::from_slice(&bytes) {
                 res.push(msg);
             }
         }

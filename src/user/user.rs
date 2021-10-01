@@ -34,14 +34,6 @@ impl SignedUserAttribute {
 }
 
 #[derive(Debug, Error)]
-pub enum DecodeError {
-    #[error("Invalid size")]
-    Size,
-    #[error("Invalid message")]
-    Message,
-}
-
-#[derive(Debug, Error)]
 pub enum VerifyError {
     #[error("Invalid address")]
     Address,

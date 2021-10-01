@@ -1,8 +1,10 @@
 mod network;
 mod user_handle;
+mod controller;
 
 pub use user_handle::UserHandle;
 pub use network::{UserDHT,Publisher,Subscriber};
+pub use controller::*;
 
 pub const USER_DHT_KEY_LENGTH: usize= 32;
 pub const PUBSUB_DHT_KEY_LENGTH: usize= 64;

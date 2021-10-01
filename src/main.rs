@@ -1,9 +1,10 @@
 use chrono::Utc;
+use log::warn;
+use noktulo::cli::Timeline;
 use noktulo::crypto::{PublicKey, SecretKey};
 use noktulo::kad::*;
-use noktulo::noktulo::{Config, Noktulo};
-use noktulo::service::{Publisher, Subscriber, UserDHT, UserHandle, TESTNET_USER_DHT};
-use noktulo::user::post::Post;
+use noktulo::service::{Config, NetworkController, UserHandle, TESTNET_USER_DHT};
+use noktulo::user::post::PostKind;
 use noktulo::user::user::{Address, UserAttribute};
 use serde_json;
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{stdin, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -26,9 +27,9 @@ async fn main() -> io::Result<()> {
 }
 
 struct App {
-    nok: Noktulo,
+    controller: NetworkController,
     user_handles: Vec<UserHandle>,
-    pubkeys: HashMap<Address, PublicKey>,
+    pubkey_dict: HashMap<Address, PublicKey>,
 }
 
 impl App {
@@ -38,7 +39,7 @@ impl App {
             nodeinfo_addr: Some(SocketAddr::from_str("0.0.0.0:6271").unwrap()),
             bootstrap: Vec::new(),
         };
-        let nok = Noktulo::init(config).await;
+        let nok = NetworkController::init(config).await;
 
         let mut userfile = OpenOptions::new()
             .read(true)
@@ -59,18 +60,18 @@ impl App {
         pubkey_file.read_to_end(&mut buf).await?;
 
         let pk_bytes: Vec<[u8; 32]> = serde_json::from_slice(&buf).unwrap();
-        let mut pubkeys = HashMap::new();
+        let mut pubkey_dict = HashMap::new();
         for bytes in pk_bytes {
             if let Ok(pk) = PublicKey::from_bytes(&bytes) {
                 let addr = Address::from(pk.clone());
-                pubkeys.insert(addr, pk);
+                pubkey_dict.insert(addr, pk);
             }
         }
 
         Ok(App {
-            nok,
+            controller: nok,
             user_handles,
-            pubkeys,
+            pubkey_dict,
         })
     }
 
@@ -109,11 +110,13 @@ impl App {
         Ok(())
     }
 
-    pub async fn timeline(&self, user_handle: UserHandle) {
+    pub async fn timeline(&self, mut user_handle: UserHandle) {
+        let mut timeline = Timeline::new();
+
         let pk = PublicKey::from(SecretKey::from(user_handle.signing_key));
 
-        let publisher = self.nok.create_publisher(&pk).await;
-        let mut subscriber = self.nok.create_subscriber().await;
+        let publisher = self.controller.create_publisher(&pk).await;
+        let mut subscriber = self.controller.create_subscriber().await;
 
         for (addr, _) in user_handle.followings.iter() {
             subscriber.subscribe(addr.clone()).await;
@@ -121,38 +124,91 @@ impl App {
 
         loop {
             print!("> ");
-            let mut s = String::new();
-            io::stdin().read_line(&mut s).unwrap();
+            let mut command = String::new();
+            io::stdin().read_line(&mut command).unwrap();
 
-            match s.as_str() {
+            match command.as_str() {
                 "update" => {
-                    let umsgs = subscriber.get_new_message().await;
-                    for umsg in umsgs {
+                    let sigposts = subscriber.get_new_message().await;
+                    for sigpost in sigposts {
                         let pubkey;
-                        if let Some(pk) = self.pubkeys.get(&umsg.addr) {
+                        if let Some(pk) = self.pubkey_dict.get(&sigpost.addr) {
                             pubkey = pk.clone();
                         } else {
-                            if let Some(pk) = self.nok.get_pubkey(umsg.addr.clone()).await {
+                            if let Some(pk) = self.controller.get_pubkey(sigpost.addr.clone()).await
+                            {
                                 pubkey = pk;
                             } else {
+                                warn!("Not found the public key, ignoring.");
                                 continue;
                             }
                         }
 
-                        if umsg.verify(&pubkey).is_ok() {
-                            match umsg.msg {
-                                MessageKind::Post(post) => {
-                                    if let Ok(post) =  serde_json::from_slice::<Post>(&post.post_bytes) {
-                                        // TODO!
-                                    }
-                                },
-                                _ => ()
-                            }
+                        if sigpost.verify(&pubkey).is_ok() {
+                            user_handle
+                                .followings
+                                .insert(sigpost.addr.clone(), Some(sigpost.post.user_attr.clone()));
+                            timeline.push(sigpost);
                         }
                     }
                 }
+                "hoot" => {
+                    let mut text = String::new();
+                    io::stdin().read_line(&mut text).unwrap();
+                    let sigpost = user_handle.hoot(text, None, None, vec![]);
+                    publisher
+                        .publish(&serde_json::to_vec(&sigpost).unwrap(), &user_handle.addr())
+                        .await;
+                }
+                "rehoot" => {
+                    let mut index_s = String::new();
+                    io::stdin().read_line(&mut index_s).unwrap();
+                    if let Ok(index) = index_s.parse::<usize>() {
+                        if let Some(sigpost) = timeline.get(index) {
+                            let sigpost = user_handle.rehoot(sigpost.clone());
+                            publisher
+                                .publish(
+                                    &serde_json::to_vec(&sigpost).unwrap(),
+                                    &user_handle.addr(),
+                                )
+                                .await;
+                        } else {
+                            println!("Not found");
+                        }
+                    } else {
+                        println!("Invalid input");
+                    }
+                }
+                "del" => {
+                    let mut id_s = String::new();
+                    io::stdin().read_line(&mut id_s).unwrap();
+                    if let Ok(id) = id_s.parse::<u128>() {
+                        if let Some(sigpost) = user_handle.del(id) {
+                            publisher
+                                .publish(
+                                    &serde_json::to_vec(&sigpost).unwrap(),
+                                    &user_handle.addr(),
+                                )
+                                .await;
+                        } else {
+                            println!("Not found");
+                        }
+                    } else {
+                        println!("Invalid input");
+                    }
+                }
+                "follow" => {
+                    let mut addr_s = String::new();
+                    io::stdin().read_line(&mut addr_s).unwrap();
+                    if let Ok(addr) = Address::from_str(&addr_s) {
+                        if !user_handle.followings.contains_key(&addr) {
+                            user_handle.followings.insert(addr, None);
+                        }
+                    }
+                }
+                "quit" => break,
                 _ => (),
-            };
+            }
         }
     }
 
