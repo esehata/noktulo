@@ -4,7 +4,6 @@ use noktulo::cli::Timeline;
 use noktulo::crypto::{PublicKey, SecretKey};
 use noktulo::kad::*;
 use noktulo::service::{Config, NetworkController, UserHandle, TESTNET_USER_DHT};
-use noktulo::user::post::PostKind;
 use noktulo::user::user::{Address, UserAttribute};
 use serde_json;
 use std::collections::HashMap;
@@ -13,8 +12,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::fs::OpenOptions;
-use tokio::io::{stdin, AsyncReadExt, AsyncWriteExt};
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -23,7 +22,7 @@ use tokio::sync::Mutex;
 async fn main() -> io::Result<()> {
     env_logger::init();
     let mut app = App::init().await.unwrap();
-    app.run().await
+    app.cli().await
 }
 
 struct App {
@@ -97,20 +96,30 @@ impl App {
 
             if index < self.user_handles.len() {
                 let user_handle = self.user_handles[index].clone();
-                self.timeline(user_handle).await;
+                let new_handle = self.timeline(user_handle).await;
+                self.user_handles[index] = new_handle;
             } else if index == self.user_handles.len() {
                 self.create_new_user().await?;
             } else if index == self.user_handles.len() + 1 {
                 break;
             } else {
-                panic!("invalid index!");
+                println!("invalid index!");
             }
         }
+
+        let mut userfile = File::create("users").await?;
+        userfile
+            .write_all(
+                serde_json::to_string(&self.user_handles)
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .await?;
 
         Ok(())
     }
 
-    pub async fn timeline(&self, mut user_handle: UserHandle) {
+    pub async fn timeline(&self, mut user_handle: UserHandle) -> UserHandle {
         let mut timeline = Timeline::new();
 
         let pk = PublicKey::from(SecretKey::from(user_handle.signing_key));
@@ -202,14 +211,30 @@ impl App {
                     io::stdin().read_line(&mut addr_s).unwrap();
                     if let Ok(addr) = Address::from_str(&addr_s) {
                         if !user_handle.followings.contains_key(&addr) {
-                            user_handle.followings.insert(addr, None);
+                            user_handle.followings.insert(addr.clone(), None);
                         }
+                        subscriber.subscribe(addr).await;
+                    } else {
+                        println!("Invalid address");
+                    }
+                }
+                "unfollow" => {
+                    let mut addr_s = String::new();
+                    io::stdin().read_line(&mut addr_s).unwrap();
+                    if let Ok(addr) = Address::from_str(&addr_s) {
+                        if user_handle.followings.contains_key(&addr) {
+                            user_handle.followings.remove(&addr);
+                        }
+                        subscriber.stop_subscription(&addr).await;
+                    } else {
+                        println!("Invalid address");
                     }
                 }
                 "quit" => break,
                 _ => (),
             }
         }
+        user_handle
     }
 
     pub async fn create_new_user(&mut self) -> io::Result<UserHandle> {
