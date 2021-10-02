@@ -10,7 +10,7 @@ use std::convert::TryInto;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::{File, OpenOptions, create_dir};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]
@@ -33,13 +33,15 @@ impl CLI {
             nodeinfo_addr: Some(SocketAddr::from_str("0.0.0.0:6271").unwrap()),
             bootstrap: Vec::new(),
         };
-        let nok = NetworkController::init(config).await;
+        let net = NetworkController::init(config).await;
+
+        let _ = create_dir("localdata").await;
 
         let mut userfile = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open("users")
+            .open("localdata/users")
             .await
             .unwrap();
         let mut buf = vec![];
@@ -57,7 +59,7 @@ impl CLI {
             .read(true)
             .write(true)
             .create(true)
-            .open("pubkeys")
+            .open("localdata/pubkeys")
             .await?;
         let mut buf = vec![];
         pubkey_file.read_to_end(&mut buf).await?;
@@ -79,7 +81,7 @@ impl CLI {
         }
 
         Ok(CLI {
-            controller: nok,
+            controller: net,
             user_handles,
             pubkey_dict,
         })
@@ -119,7 +121,7 @@ impl CLI {
             }
         }
 
-        let mut userfile = File::create("users").await?;
+        let mut userfile = File::create("localdata/users").await?;
         userfile
             .write_all(
                 serde_json::to_string(&self.user_handles)
@@ -285,7 +287,7 @@ impl CLI {
             .read(true)
             .write(true)
             .create(true)
-            .open("users")
+            .open("localdata/users")
             .await?;
         userfile.set_len(0).await?;
         userfile
