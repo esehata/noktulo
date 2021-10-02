@@ -2,37 +2,32 @@ use chrono::Utc;
 use log::warn;
 use noktulo::cli::Timeline;
 use noktulo::crypto::{PublicKey, SecretKey};
-use noktulo::kad::*;
-use noktulo::service::{Config, NetworkController, UserHandle, TESTNET_USER_DHT};
-use noktulo::user::user::{Address, UserAttribute};
+use noktulo::service::{Config, NetworkController, UserHandle};
+use noktulo::user::user::{Address, SignedUserAttribute, UserAttribute};
 use serde_json;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger::init();
-    let mut app = App::init().await.unwrap();
-    app.cli().await
+    let mut app = CLI::init().await.unwrap();
+    return app.cli().await;
 }
 
-struct App {
+struct CLI {
     controller: NetworkController,
     user_handles: Vec<UserHandle>,
     pubkey_dict: HashMap<Address, PublicKey>,
 }
 
-impl App {
-    pub async fn init() -> io::Result<App> {
+impl CLI {
+    pub async fn init() -> io::Result<CLI> {
         let config = Config {
             bind_addr: SocketAddr::from_str("0.0.0.0:6270").unwrap(),
             nodeinfo_addr: Some(SocketAddr::from_str("0.0.0.0:6271").unwrap()),
@@ -42,23 +37,39 @@ impl App {
 
         let mut userfile = OpenOptions::new()
             .read(true)
+            .write(true)
             .create(true)
             .open("users")
-            .await?;
+            .await
+            .unwrap();
         let mut buf = vec![];
         userfile.read_to_end(&mut buf).await?;
 
-        let user_handles: Vec<UserHandle> = serde_json::from_slice(&buf).unwrap();
+        let user_handles: Vec<UserHandle> = match serde_json::from_slice(&buf) {
+            Ok(e) => e,
+            Err(_) => {
+                userfile.set_len(0).await.unwrap(); // truncate
+                vec![]
+            }
+        };
 
         let mut pubkey_file = OpenOptions::new()
             .read(true)
+            .write(true)
             .create(true)
             .open("pubkeys")
             .await?;
         let mut buf = vec![];
         pubkey_file.read_to_end(&mut buf).await?;
 
-        let pk_bytes: Vec<[u8; 32]> = serde_json::from_slice(&buf).unwrap();
+        let pk_bytes: Vec<[u8; 32]> = match serde_json::from_slice(&buf) {
+            Ok(e) => e,
+            Err(_) => {
+                pubkey_file.set_len(0).await.unwrap();
+                vec![]
+            }
+        };
+
         let mut pubkey_dict = HashMap::new();
         for bytes in pk_bytes {
             if let Ok(pk) = PublicKey::from_bytes(&bytes) {
@@ -67,7 +78,7 @@ impl App {
             }
         }
 
-        Ok(App {
+        Ok(CLI {
             controller: nok,
             user_handles,
             pubkey_dict,
@@ -78,18 +89,19 @@ impl App {
         loop {
             println!("Select a user:");
             for (i, u) in self.user_handles.iter().enumerate() {
-                println!("[{}] {}", i, u.user_attr.name);
+                println!("[{}] {}", i, u.sig_attr.attr.name);
             }
             println!(
                 r"or
-        [{}] Create a new account
-        [{}] Quit
+[{}] Create a new account
+[{}] Quit
         ",
                 self.user_handles.len(),
                 self.user_handles.len() + 1
             );
 
             print!("Input: ");
+            io::stdout().flush().unwrap();
             let mut s = String::new();
             io::stdin().read_line(&mut s).unwrap();
             let index: usize = s.trim().parse().unwrap();
@@ -133,10 +145,12 @@ impl App {
 
         loop {
             print!("> ");
+            io::stdout().flush().unwrap();
             let mut command = String::new();
             io::stdin().read_line(&mut command).unwrap();
+            let command_t = command.trim();
 
-            match command.as_str() {
+            match command_t {
                 "update" => {
                     let sigposts = subscriber.get_new_message().await;
                     for sigpost in sigposts {
@@ -165,6 +179,7 @@ impl App {
                     let mut text = String::new();
                     io::stdin().read_line(&mut text).unwrap();
                     let sigpost = user_handle.hoot(text, None, None, vec![]);
+                    
                     publisher
                         .publish(&serde_json::to_vec(&sigpost).unwrap(), &user_handle.addr())
                         .await;
@@ -239,38 +254,31 @@ impl App {
 
     pub async fn create_new_user(&mut self) -> io::Result<UserHandle> {
         let secret_key = SecretKey::random();
-        let public_key: PublicKey = secret_key.clone().into();
-        let created_at: u64 = Utc::now().timestamp().try_into().unwrap();
+        let public_key = PublicKey::from(secret_key.clone());
+        let addr = Address::from(public_key.clone());
+
         let mut name = String::new();
         let mut description = String::new();
 
         print!("Name: ");
+        io::stdout().flush().unwrap();
         io::stdin().read_line(&mut name).unwrap();
         name = name.trim().to_string();
         print!("Profile: ");
+        io::stdout().flush().unwrap();
         io::stdin().read_line(&mut description).unwrap();
         description = description.trim().to_string();
 
-        let signature = secret_key.sign(
-            &[
-                name.as_bytes(),
-                &created_at.to_le_bytes(),
-                description.as_bytes(),
-            ]
-            .concat(),
-        );
+        let created_at: u64 = Utc::now().timestamp().try_into().unwrap();
 
-        let user_attr = UserAttribute::new(
-            public_key.into(),
-            &name,
-            created_at,
-            &description,
-            signature,
-        )
-        .unwrap();
+        let user_attr = UserAttribute::new(&name, created_at, &description);
+
+        let signature = secret_key.sign(&serde_json::to_vec(&user_attr).unwrap());
+        let sig_attr = SignedUserAttribute::new(addr, user_attr, signature);
+        sig_attr.verify(&public_key).unwrap();
 
         let user_handle =
-            UserHandle::new(user_attr, secret_key.into(), HashMap::new(), &Vec::new());
+            UserHandle::new(sig_attr, secret_key.into(), HashMap::new(), &Vec::new());
         self.user_handles.push(user_handle.clone());
 
         let mut userfile = OpenOptions::new()
@@ -288,10 +296,12 @@ impl App {
             )
             .await?;
 
+        println!("Created new user: {} @{}",user_handle.sig_attr.attr.name,user_handle.sig_attr.addr.to_string());
+
         Ok(user_handle)
     }
 
-    pub async fn run(&mut self) -> io::Result<()> {
+    /* pub async fn run(&mut self) -> io::Result<()> {
         let input = io::stdin();
         println!("bootstrap:");
         let mut buffer = String::new();
@@ -301,7 +311,7 @@ impl App {
             Vec::new()
         } else {
             vec![NodeInfo {
-                id: Key::from(params[1]),
+                id: Key::try_from(params[1]).unwrap(),
                 addr: params[0].parse().unwrap(),
                 net_id: String::from(TESTNET_USER_DHT),
             }]
@@ -348,57 +358,57 @@ impl App {
             match args[0].as_ref() {
                 "p" => {
                     dummy_info.addr = args[1].parse().unwrap();
-                    dummy_info.id = Key::from(args[2]);
+                    dummy_info.id = Key::try_from(args[2]).unwrap();
                     println!("{:?}", handle.ping(dummy_info.clone()).await);
                 }
                 "s" => {
                     dummy_info.addr = args[1].parse().unwrap();
-                    dummy_info.id = Key::from(args[2]);
+                    dummy_info.id = Key::try_from(args[2]).unwrap();
                     println!(
                         "{:?}",
                         handle
-                            .store(dummy_info.clone(), Key::from(args[3]), args[4].as_bytes())
+                            .store(dummy_info.clone(), Key::try_from(args[3]).unwrap(), args[4].as_bytes())
                             .await
                     );
                 }
                 "fn" => {
                     dummy_info.addr = args[1].parse().unwrap();
-                    dummy_info.id = Key::from(args[2]);
+                    dummy_info.id = Key::try_from(args[2]).unwrap();
                     println!(
                         "{:?}",
                         handle
-                            .find_node(dummy_info.clone(), Key::from(args[3]))
+                            .find_node(dummy_info.clone(), Key::try_from(args[3]).unwrap())
                             .await
                     );
                 }
                 "fv" => {
                     dummy_info.addr = args[1].parse().unwrap();
-                    dummy_info.id = Key::from(args[2]);
+                    dummy_info.id = Key::try_from(args[2]).unwrap();
                     println!(
                         "{:?}",
                         handle
-                            .find_value(dummy_info.clone(), Key::from(args[3]))
+                            .find_value(dummy_info.clone(), Key::try_from(args[3]).unwrap())
                             .await
                     );
                 }
                 "ln" => {
-                    println!("{:?}", handle.lookup_nodes(Key::from(args[1])).await);
+                    println!("{:?}", handle.lookup_nodes(Key::try_from(args[1]).unwrap()).await);
                 }
                 "lv" => {
-                    println!("{:?}", handle.lookup_value(Key::from(args[1])).await);
+                    println!("{:?}", handle.lookup_value(Key::try_from(args[1]).unwrap()).await);
                 }
                 "put" => {
                     println!(
                         "{:?}",
-                        handle.put(Key::from(args[1]), args[2].as_bytes()).await
+                        handle.put(Key::try_from(args[1]).unwrap(), args[2].as_bytes()).await
                     );
                 }
                 "get" => {
-                    println!("{:?}", handle.get(Key::from(args[1])).await);
+                    println!("{:?}", handle.get(Key::try_from(args[1]).unwrap()).await);
                 }
                 "uc" => {
                     dummy_info.addr = args[1].parse().unwrap();
-                    dummy_info.id = Key::from(args[2]);
+                    dummy_info.id = Key::try_from(args[2]).unwrap();
                     println!(
                         "{:?}",
                         handle.unicast(dummy_info.clone(), args[3].as_bytes()).await
@@ -422,5 +432,5 @@ impl App {
             }
         }
         Ok(())
-    }
+    } */
 }

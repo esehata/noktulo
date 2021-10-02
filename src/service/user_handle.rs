@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use crate::crypto::{PublicKey, SecretKey};
 use crate::user::post::{Hoot, Post, PostKind};
-use crate::user::user::UserAttribute;
+use crate::user::user::{SignedUserAttribute, UserAttribute};
 use crate::user::{post::SignedPost, user::Address};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserHandle {
-    pub user_attr: UserAttribute,
+    pub sig_attr: SignedUserAttribute,
     pub signing_key: [u8; 32],
     pub followings: HashMap<Address, Option<UserAttribute>>,
     pub posts: Vec<SignedPost>,
@@ -17,13 +17,13 @@ pub struct UserHandle {
 
 impl UserHandle {
     pub fn new(
-        user_info: UserAttribute,
+        sig_attr: SignedUserAttribute,
         signing_key: [u8; 32],
         followings: HashMap<Address, Option<UserAttribute>>,
         posts: &[SignedPost],
     ) -> UserHandle {
         UserHandle {
-            user_attr: user_info,
+            sig_attr,
             signing_key,
             followings,
             posts: posts.to_vec(),
@@ -39,7 +39,7 @@ impl UserHandle {
     }
 
     pub fn create_post(&mut self, post: PostKind) -> SignedPost {
-        let user_attr = self.user_attr.clone();
+        let user_attr = self.sig_attr.attr.clone();
 
         let mut id = 0;
         if !self.posts.is_empty() {

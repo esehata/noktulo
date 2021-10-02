@@ -13,6 +13,14 @@ pub struct SignedUserAttribute {
 }
 
 impl SignedUserAttribute {
+    pub fn new(addr: Address, attr: UserAttribute, signature: [u8; 64]) -> SignedUserAttribute {
+        SignedUserAttribute {
+            addr,
+            attr,
+            signature: signature.to_vec(),
+        }
+    }
+
     pub fn verify(&self, pubkey: &PublicKey) -> Result<(), VerifyError> {
         let addr = Address::from(pubkey.clone());
 
@@ -51,32 +59,11 @@ pub struct UserAttribute {
 }
 
 impl UserAttribute {
-    pub fn new(
-        public_key: [u8; 32],
-        name: &str,
-        created_at: u64,
-        description: &str,
-        signature: [u8; 64],
-    ) -> Result<UserAttribute, Ed25519Error> {
-        if PublicKey::from_bytes(&public_key)?
-            .verify(
-                &signature,
-                &[
-                    name.as_bytes(),
-                    &created_at.to_le_bytes(),
-                    description.as_bytes(),
-                ]
-                .concat(),
-            )
-            .is_ok()
-        {
-            Err(Ed25519Error::Signature)
-        } else {
-            Ok(UserAttribute {
-                name: name.to_string(),
-                created_at,
-                description: description.to_string(),
-            })
+    pub fn new(name: &str, created_at: u64, description: &str) -> UserAttribute {
+        UserAttribute {
+            name: name.to_string(),
+            created_at,
+            description: description.to_string(),
         }
     }
 }

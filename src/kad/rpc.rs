@@ -54,7 +54,7 @@ impl ReqHandle {
     pub async fn rep(self, rep: Reply, src: NodeInfo) {
         let rep_rmsg = RpcMessage {
             token: self.token,
-            src: src,
+            src,
             dst: self.src.clone(),
             msg: Message::Reply(rep),
         };
@@ -81,12 +81,13 @@ impl Rpc {
     }
 
     pub async fn start_server(&self) {
-        let is_start = self.is_start.lock().await;
+        let mut is_start = self.is_start.lock().await;
         if !(*is_start) {
+            *is_start = true;
             let rpc = self.clone();
             tokio::spawn(async move {
-                let mut buf = [0; MESSAGE_LEN];
                 loop {
+                    let mut buf = [0; MESSAGE_LEN];
                     let (len, src_addr) = rpc.socket.recv_from(&mut buf).await.unwrap();
                     let mut rmsg: RpcMessage;
                     match serde_json::from_str(str::from_utf8(&buf[..len]).unwrap()) {
@@ -118,13 +119,13 @@ impl Rpc {
 
                             match rmsg.msg {
                                 Message::Kill => {
-                                    break;
+                                    //break;
                                 }
                                 Message::Request(req) => {
                                     let req_handle = ReqHandle {
                                         token: rmsg.token,
                                         src: rmsg.src,
-                                        req: req,
+                                        req,
                                         rpc: rpc.clone(),
                                     };
                                     if let Err(_) = node_info.1.send(req_handle) {
@@ -158,11 +159,11 @@ impl Rpc {
 
     pub async fn open(
         socket: UdpSocket,
-        tx: UnboundedSender<ReqHandle>,
         node_info: NodeInfo,
+        tx: UnboundedSender<ReqHandle>,
     ) -> Rpc {
         let mut rpc = Rpc::new(socket);
-        rpc.add(tx, node_info).await;
+        rpc.add(node_info, tx).await;
 
         let ret = rpc.clone();
         rpc.start_server().await;
@@ -170,9 +171,10 @@ impl Rpc {
         ret
     }
 
-    pub async fn add(&mut self, tx: UnboundedSender<ReqHandle>, node_info: NodeInfo) {
+    pub async fn add(&mut self, node_info: NodeInfo, tx: UnboundedSender<ReqHandle>) {
         let mut node_infos = self.node_infos.lock().await;
-        node_infos.push((node_info, tx));
+        node_infos.push((node_info, tx.clone()));
+        drop(node_infos);
     }
 
     async fn handle_rep(self, token: Key, rep: Reply) {
@@ -222,15 +224,15 @@ impl Rpc {
         drop(pending);
 
         let node_infos = self.node_infos.lock().await;
-        if let None = node_infos.iter().find(|x| x.0 == src) {
+        if let None = node_infos.iter().find(|(x, _)| *x == src) {
             panic!("Invalid source node!");
         }
         drop(node_infos);
 
         let rmsg = RpcMessage {
             token: token.clone(),
-            src: src,
-            dst: dst,
+            src,
+            dst,
             msg: Message::Request(req),
         };
         self.send_msg(&rmsg, rmsg.dst.addr).await;
@@ -251,76 +253,80 @@ impl Rpc {
 
     async fn node_infos(&self) -> Vec<NodeInfo> {
         let node_infos = self.node_infos.lock().await;
-        node_infos.iter().map(|x| x.0.clone()).collect()
+        node_infos.iter().map(|(ni, _)| ni.clone()).collect()
     }
 
     pub async fn start_nodeinfo_server(&self, addr: SocketAddr) -> io::Result<()> {
+        let rpc = self.clone();
         let listener = TcpListener::bind(addr).await?;
+        tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                let rpc = rpc.clone();
+                tokio::spawn(async move {
+                    let mut stream = BufReader::new(socket);
+                    let mut first_line = String::new();
+                    stream.read_line(&mut first_line).await.unwrap();
 
-        loop {
-            let (socket, _) = listener.accept().await?;
-            let rpc = self.clone();
-            tokio::spawn(async move {
-                let mut stream = BufReader::new(socket);
-                let mut first_line = String::new();
-                stream.read_line(&mut first_line).await.unwrap();
+                    let mut params = first_line.split_whitespace();
+                    let method = params.next();
+                    let query = params.next();
 
-                let mut params = first_line.split_whitespace();
-                let method = params.next();
-                let query = params.next();
-
-                match (method, query) {
-                    (Some("GET"), Some(query)) => {
-                        let mut node_infos = rpc.node_infos().await;
-                        match query {
-                            "test" => {
-                                node_infos = node_infos
-                                    .iter()
-                                    .filter(|x| {
-                                        x.net_id == TESTNET_USER_DHT
-                                            || x.net_id == TESTNET_PUBSUB_DHT
-                                    })
-                                    .cloned()
-                                    .collect();
+                    match (method, query) {
+                        (Some("GET"), Some(query)) => {
+                            let mut node_infos = rpc.node_infos().await;
+                            match query {
+                                "test" => {
+                                    node_infos = node_infos
+                                        .iter()
+                                        .filter(|x| {
+                                            x.net_id == TESTNET_USER_DHT
+                                                || x.net_id == TESTNET_PUBSUB_DHT
+                                        })
+                                        .cloned()
+                                        .collect();
+                                }
+                                "main" => {
+                                    node_infos = node_infos
+                                        .iter()
+                                        .filter(|x| {
+                                            x.net_id == MAINNET_USER_DHT
+                                                || x.net_id == MAINNET_PUBSUB_DHT
+                                        })
+                                        .cloned()
+                                        .collect();
+                                }
+                                _ => (),
                             }
-                            "main" => {
-                                node_infos = node_infos
-                                    .iter()
-                                    .filter(|x| {
-                                        x.net_id == MAINNET_USER_DHT
-                                            || x.net_id == MAINNET_PUBSUB_DHT
-                                    })
-                                    .cloned()
-                                    .collect();
-                            }
-                            _ => (),
-                        }
-                        let msg = serde_json::to_string(&node_infos).unwrap();
-                        stream
-                            .get_mut()
-                            .write_all(
-                                format!(
-                                    "HTTP/1.1 200 OK\r\n
+                            let msg = serde_json::to_string(&node_infos).unwrap();
+                            stream
+                                .get_mut()
+                                .write_all(
+                                    format!(
+                                        "HTTP/1.1 200 OK\r\n
                                     Content-Type: application/json; charset=UTF-8\r\n
                                     Content-Length: {}\r\n\r\n{}",
-                                    msg.len(),
-                                    msg
+                                        msg.len(),
+                                        msg
+                                    )
+                                    .as_bytes(),
                                 )
-                                .as_bytes(),
-                            )
-                            .await
-                            .unwrap();
+                                .await
+                                .unwrap();
+                        }
+                        _ => {
+                            stream
+                                .get_mut()
+                                .write_all("HTTP/1.1 400 Bad Request\r\n\r\n".as_bytes())
+                                .await
+                                .unwrap();
+                        }
                     }
-                    _ => {
-                        stream
-                            .get_mut()
-                            .write_all("HTTP/1.1 400 Bad Request\r\n\r\n".as_bytes())
-                            .await
-                            .unwrap();
-                    }
-                }
-            });
-        }
+                });
+            }
+        });
+
+        Ok(())
     }
 
     pub async fn get_nodeinfos(addr: SocketAddr) -> io::Result<Vec<NodeInfo>> {

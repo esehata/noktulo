@@ -6,6 +6,7 @@ use crate::user::user::Address;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
+use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::Mutex;
@@ -31,6 +32,7 @@ impl UserDHT {
             bootstrap.clone(),
         )
         .await;
+        info!("User DHT node started");
 
         UserDHT {
             user_dht: Arc::new(user_dht),
@@ -38,11 +40,10 @@ impl UserDHT {
     }
 
     pub fn is_valid_addr_pubkey_pair(data: &[u8]) -> bool {
-        if data.len() != 65 {
+        if data.len() != 64 {
             false
         } else {
-            let addr_bytes: [u8; 32] = data[..32].try_into().unwrap();
-            let addr: Address = addr_bytes.into();
+            let addr= Address::new(data[..32].try_into().unwrap());
             if let Ok(pk) = PublicKey::from_bytes(&data[32..].try_into().unwrap()) {
                 let addr2 = Address::from(pk);
                 addr == addr2
@@ -55,8 +56,8 @@ impl UserDHT {
     pub async fn register_pubkey(&self, pubkey: &PublicKey) {
         let addr_bytes: [u8; 32] = Address::from(pubkey.clone()).into();
         let pk_bytes: [u8; 32] = pubkey.clone().into();
-        let addr_key_pair = [&addr_bytes[1..], &pk_bytes].concat();
-        let key = Key::from(&addr_bytes[1..]);
+        let addr_key_pair = [&addr_bytes[..], &pk_bytes].concat();
+        let key = Key::from(&addr_bytes[..]);
         self.user_dht.put(key, &addr_key_pair).await;
     }
 
@@ -106,6 +107,7 @@ impl Publisher {
     pub async fn publish(&self, msg: &[u8], dst: &Address) {
         let key = Key::from(dst.clone());
         self.node.multicast(&key, msg).await;
+        info!("Hoot multicast");
     }
 }
 

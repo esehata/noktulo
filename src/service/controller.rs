@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use log::info;
 use tokio::{net::UdpSocket, sync::Mutex};
 
 use crate::{
@@ -54,6 +55,7 @@ impl NetworkController {
 
     pub async fn create_publisher(&self, pubkey: &PublicKey) -> Publisher {
         self.user_dht.register_pubkey(pubkey).await;
+        info!("Registered a public key");
         Publisher::new(
             Address::from(pubkey.clone()),
             self.rpc.clone(),

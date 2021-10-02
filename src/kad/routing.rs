@@ -13,20 +13,20 @@ pub struct NodeInfo {
 
 #[derive(Debug)]
 pub struct RoutingTable {
-    id_length: usize,
+    key_len: usize,
     node_info: NodeInfo,
     buckets: Vec<Vec<NodeInfo>>,
 }
 
 impl RoutingTable {
-    pub fn new(id_length: usize, node_info: &NodeInfo) -> RoutingTable {
-        assert_eq!(id_length, node_info.id.len());
+    pub fn new(node_info: &NodeInfo, key_len: usize) -> RoutingTable {
+        assert_eq!(node_info.id.len(), key_len);
         let mut buckets = Vec::new();
-        for _ in 0..id_length*8 {
+        for _ in 0..key_len * 8 {
             buckets.push(Vec::new());
         }
         let mut ret = RoutingTable {
-            id_length,
+            key_len,
             node_info: node_info.clone(),
             buckets,
         };
@@ -35,7 +35,7 @@ impl RoutingTable {
     }
 
     pub fn update(&mut self, node_info: NodeInfo) -> Option<NodeInfo> {
-        assert_eq!(self.id_length, node_info.id.len());
+        assert_eq!(self.key_len, node_info.id.len());
         let bucket_index = self.lookup_bucket_index(node_info.id.clone());
         let bucket = &mut self.buckets[bucket_index];
         let node_index = bucket.iter().position(|x| x.id == node_info.id);
@@ -58,7 +58,7 @@ impl RoutingTable {
     }
 
     pub fn closest_nodes(&self, item: Key, count: usize) -> Vec<(NodeInfo, Key)> {
-        assert_eq!(self.id_length, item.len());
+        assert_eq!(self.key_len, item.len());
         if count == 0 {
             return Vec::new();
         }
@@ -78,7 +78,7 @@ impl RoutingTable {
     }
 
     pub fn remove(&mut self, node_info: &NodeInfo) {
-        assert_eq!(self.id_length, node_info.id.len());
+        assert_eq!(self.key_len, node_info.id.len());
         let bucket_index = self.lookup_bucket_index(node_info.id.clone());
         if let Some(item_index) = self.buckets[bucket_index]
             .iter()

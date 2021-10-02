@@ -71,11 +71,11 @@ impl Node {
             net_id: net_id,
         };
 
-        rpc_raw.add(tx.clone(), node_info.clone()).await;
+        rpc_raw.add(node_info.clone(), tx.clone()).await;
         rpc_raw.start_server().await;
         drop(rpc_raw);
 
-        let mut routes = RoutingTable::new(key_length, &node_info.clone());
+        let mut routes = RoutingTable::new(&node_info.clone(), key_length);
         for ni in bootstrap.iter() {
             routes.update(ni.clone());
         }
@@ -105,9 +105,6 @@ impl Node {
     pub async fn start_req_handler(self, mut rx: UnboundedReceiver<ReqHandle>) {
         tokio::spawn(async move {
             while let Some(req_handle) = rx.recv().await {
-                if self.tx.is_closed() {
-                    break;
-                }
                 let node = self.clone();
                 tokio::spawn(async move {
                     let rep =
@@ -121,8 +118,13 @@ impl Node {
 
     pub async fn handle_req(&self, req: Request, src: NodeInfo) -> Reply {
         let mut routes = self.routes.lock().await;
+
+        let res = routes.update(src.clone());
+
+        drop(routes);
+
         // update routes
-        if let Some(e) = routes.update(src.clone()) {
+        if let Some(e) = res {
             let node = self.clone();
             tokio::spawn(async move {
                 let mut routes = node.routes.lock().await;
@@ -134,7 +136,6 @@ impl Node {
                 drop(routes);
             });
         }
-        drop(routes);
 
         let ret = match req {
             Request::Ping => Reply::Ping,
@@ -211,7 +212,7 @@ impl Node {
                         drop(broadcast_tokens);
                     });
                 } else {
-                    info!("Broadcast message, ignoring");
+                    info!("Message already broadcast, ignoring");
                 }
 
                 Reply::Ping
@@ -221,27 +222,27 @@ impl Node {
                     if let Err(_) = self.tx.send(msg.clone()) {
                         info!("Closing channel, since receiver is dead.");
                     }
-                }
-                let broadcast_tokens = self.broadcast_tokens.lock().await;
-                let hash = Key::hash(&msg, TOKEN_KEY_LEN);
-                let is_relay = !broadcast_tokens.contains(&hash);
+                    let broadcast_tokens = self.broadcast_tokens.lock().await;
+                    let hash = Key::hash(&msg, TOKEN_KEY_LEN);
+                    let is_relay = !broadcast_tokens.contains(&hash);
 
-                drop(broadcast_tokens);
+                    drop(broadcast_tokens);
 
-                if is_relay {
-                    let node = self.clone();
-                    tokio::spawn(async move { node.multicast(&k, &msg).await });
+                    if is_relay {
+                        let node = self.clone();
+                        tokio::spawn(async move { node.multicast(&k, &msg).await });
 
-                    let node = self.clone();
-                    tokio::spawn(async move {
-                        sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
+                        let node = self.clone();
+                        tokio::spawn(async move {
+                            sleep(Duration::from_millis(BROADCAST_TIME_OUT)).await;
 
-                        let mut broadcast_tokens = node.broadcast_tokens.lock().await;
-                        broadcast_tokens.remove(&hash);
-                        drop(broadcast_tokens);
-                    });
-                } else {
-                    info!("Multicast message, ignoring");
+                            let mut broadcast_tokens = node.broadcast_tokens.lock().await;
+                            broadcast_tokens.remove(&hash);
+                            drop(broadcast_tokens);
+                        });
+                    } else {
+                        info!("Message already multicast, ignoring");
+                    }
                 }
 
                 Reply::Ping
@@ -453,7 +454,8 @@ impl Node {
         drop(broadcast_tokens);
 
         let mut id = prefix.clone();
-        id.resize(self.key_length);
+        id.resize(self.node_info.id.len());
+
         let mut ret = Vec::new();
 
         let candidates = self.lookup_nodes(id).await;
@@ -461,6 +463,7 @@ impl Node {
             .iter()
             .filter(|(_, d)| d.zeroes_in_prefix() >= prefix.len() * 8)
             .collect();
+
         if target.is_empty() {
             for (node_info, _) in candidates.iter().rev() {
                 let rep = self
@@ -470,6 +473,7 @@ impl Node {
                     .await
                     .unwrap();
                 let mut routes = self.routes.lock().await;
+
                 if let Some(Reply::Ping) = rep {
                     routes.update(node_info.clone());
                     ret.push(node_info.clone());
@@ -477,6 +481,7 @@ impl Node {
                 } else {
                     routes.remove(&node_info);
                 }
+                drop(routes);
             }
         } else {
             let mut joins = Vec::new();
@@ -493,9 +498,9 @@ impl Node {
                         .unwrap()
                 }));
             }
-            let mut routes = self.routes.lock().await;
             for (handle, (node_info, _)) in joins.into_iter().zip(target) {
                 let rep = handle.await.unwrap();
+                let mut routes = self.routes.lock().await;
                 if let Some(Reply::Ping) = rep {
                     routes.update(node_info.clone());
                     ret.push(node_info.clone());
