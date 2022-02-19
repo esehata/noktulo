@@ -30,7 +30,7 @@ impl SignedPost {
                         &self.signature[..].try_into().unwrap(),
                         &serde_json::to_vec(&self.post).unwrap(),
                     )
-                    .map_err(|e| VerifyError::Signature(e))
+                    .map_err(|e| {VerifyError::Signature(e)})
             }
         }
     }

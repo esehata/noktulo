@@ -2,9 +2,9 @@ use std::{net::SocketAddr, sync::Arc};
 
 use log::info;
 use tokio::{net::UdpSocket, sync::Mutex};
+use crate::crypto::PublicKey;
 
 use crate::{
-    crypto::PublicKey,
     kad::{NodeInfo, Rpc},
     service::{Publisher, Subscriber, UserDHT, PUBSUB_DHT_KEY_LENGTH, USER_DHT_KEY_LENGTH},
     user::user::Address,

@@ -1,6 +1,7 @@
 use crate::kad::Key;
 use crate::util::base64;
-use crate::{crypto::*, util::base64::Base64Error};
+use crate::crypto::{PublicKey,Ed25519Error};
+
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use thiserror::Error;
@@ -174,5 +175,5 @@ pub enum AddressError {
     #[error("Invalid checksum")]
     Checksum,
     #[error("Invalid character")]
-    Base64(Base64Error),
+    Base64(base64::Base64Error),
 }

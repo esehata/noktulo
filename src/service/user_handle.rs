@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::crypto::{PublicKey, SecretKey};
+use crate::crypto::{PublicKey,SecretKey};
 use crate::user::post::{Hoot, Post, PostKind};
 use crate::user::user::{SignedUserAttribute, UserAttribute};
 use crate::user::{post::SignedPost, user::Address};
@@ -31,7 +31,7 @@ impl UserHandle {
     }
 
     pub fn pubkey(&self) -> PublicKey {
-        SecretKey::from(self.signing_key).into()
+        PublicKey::from(SecretKey::from(self.signing_key.clone()))
     }
 
     pub fn addr(&self) -> Address {

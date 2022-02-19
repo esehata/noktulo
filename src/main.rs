@@ -1,10 +1,10 @@
 use chrono::Utc;
 use log::warn;
 use noktulo::cli::Timeline;
-use noktulo::crypto::{PublicKey, SecretKey};
 use noktulo::service::{Config, NetworkController, UserHandle};
 use noktulo::user::user::{Address, SignedUserAttribute, UserAttribute};
 use serde_json;
+use noktulo::crypto::{PublicKey,SecretKey};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{self, Write};
@@ -133,7 +133,7 @@ impl CLI {
         Ok(())
     }
 
-    pub async fn timeline(&self, mut user_handle: UserHandle) -> UserHandle {
+    pub async fn timeline(&mut self, mut user_handle: UserHandle) -> UserHandle {
         let mut timeline = Timeline::new();
 
         let pk = PublicKey::from(SecretKey::from(user_handle.signing_key));
@@ -163,6 +163,7 @@ impl CLI {
                             if let Some(pk) = self.controller.get_pubkey(sigpost.addr.clone()).await
                             {
                                 pubkey = pk;
+                                self.pubkey_dict.insert(sigpost.addr.clone(), pubkey.clone());
                             } else {
                                 warn!("Not found the public key, ignoring.");
                                 continue;
