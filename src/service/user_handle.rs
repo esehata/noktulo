@@ -60,7 +60,7 @@ impl UserHandle {
         let sigpost = SignedPost {
             addr: self.addr(),
             post,
-            signature: signature.to_vec(),
+            signature,
         };
 
         self.posts.push(sigpost.clone());

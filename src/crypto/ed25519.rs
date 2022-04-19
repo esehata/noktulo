@@ -42,7 +42,7 @@ static I: Lazy<BigUint> = Lazy::new(|| {
 
 fn h_int(m: &[u8]) -> BigUint {
     let h = h(m);
-    BigUint::from_bytes_le(&h) % (*L).clone()
+    BigUint::from_bytes_le(&h)
 }
 
 fn xrecover(y: &BigUint) -> BigUint {
@@ -118,8 +118,9 @@ impl SecretKey {
         let k = h_int(&[&rr[..], &pk[..], message].concat());
 
         let ss = (r + k * s) % (*L).clone();
+        let ss_bytes:[u8;32]=ss.to_bytes_le().try_into().unwrap();
 
-        [&rr[..], &ss.to_bytes_le()[..]]
+        [&rr[..], &ss_bytes[..]]
             .concat()
             .try_into()
             .unwrap()
@@ -128,7 +129,7 @@ impl SecretKey {
     pub fn public_key(&self) -> PublicKey {
         // 512bit
         let h = h(&self.sk);
-        // 上位256bitを取り出して整数とする
+        // 下位256bitを取り出して整数とする
         let mut a = BigUint::from_bytes_le(&h[..(B as usize) / 8]);
 
         // 下位3bitを消す
@@ -334,10 +335,16 @@ mod tests {
                 .unwrap();
         println!("cr:{:02x?}", correct_pk);
         assert_eq!(pk.to_bytes(), correct_pk);
-        let m = "hello";
-        let signature = sk.sign(m.as_bytes());
+        let m:[u8;2] = [0xaf,0x82];
+        let signature = sk.sign(&m);
+        let correct_sig: [u8;64] =
+            hex::decode("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(signature,correct_sig);
         println!("sig:{:02x?}", signature);
-        println!("res:{:?}", pk.verify(&signature, m.as_bytes()));
+        assert!(pk.verify(&signature, &m).is_ok());
     }
 
     #[test]

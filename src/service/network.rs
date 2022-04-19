@@ -135,7 +135,7 @@ impl Subscriber {
         let mut id = Key::from(addr.clone());
         id.resize_with_random(PUBSUB_DHT_KEY_LENGTH);
         let mut nodes = self.nodes.lock().await;
-        if nodes.contains_key(&addr) {
+        if !nodes.contains_key(&addr) {
             nodes.insert(
                 addr,
                 Node::start(

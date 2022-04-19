@@ -1,8 +1,9 @@
+use crate::crypto::{Ed25519Error, PublicKey};
 use crate::kad::Key;
 use crate::util::base64;
-use crate::crypto::{PublicKey,Ed25519Error};
 
 use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 use std::convert::TryInto;
 use thiserror::Error;
 
@@ -10,7 +11,8 @@ use thiserror::Error;
 pub struct SignedUserAttribute {
     pub addr: Address,
     pub attr: UserAttribute,
-    pub signature: Vec<u8>, // 64 bytes
+    #[serde(with = "BigArray")]
+    pub signature: [u8; 64]
 }
 
 impl SignedUserAttribute {
@@ -18,7 +20,7 @@ impl SignedUserAttribute {
         SignedUserAttribute {
             addr,
             attr,
-            signature: signature.to_vec(),
+            signature,
         }
     }
 

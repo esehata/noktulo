@@ -4,6 +4,7 @@ pub mod user;
 pub mod util;
 pub mod service;
 pub mod cli;
+pub mod api_server;
 
 #[cfg(test)]
 mod tests {

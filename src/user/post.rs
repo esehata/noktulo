@@ -4,6 +4,7 @@ use crate::crypto::PublicKey;
 use chrono::Local;
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 use std::convert::TryInto;
 use std::fmt;
 use thiserror::Error;
@@ -12,7 +13,8 @@ use thiserror::Error;
 pub struct SignedPost {
     pub addr: Address,
     pub post: Post,
-    pub signature: Vec<u8>, // 64 bytes, signature of json of post
+    #[serde(with = "BigArray")]
+    pub signature: [u8; 64]
 }
 
 impl SignedPost {
@@ -30,7 +32,7 @@ impl SignedPost {
                         &self.signature[..].try_into().unwrap(),
                         &serde_json::to_vec(&self.post).unwrap(),
                     )
-                    .map_err(|e| {VerifyError::Signature(e)})
+                    .map_err(|e| VerifyError::Signature(e))
             }
         }
     }
@@ -95,8 +97,14 @@ pub enum PostKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Hoot {
     pub text: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if="Option::is_none")]
     pub quoted_posts: Option<Box<SignedPost>>,
+    #[serde(default)]
+    #[serde(skip_serializing_if="Option::is_none")]
     pub reply_to: Option<Box<SignedPost>>,
+    #[serde(default)]
+    #[serde(skip_serializing_if="Vec::is_empty")]
     pub mention_to: Vec<Address>,
 }
 
@@ -114,5 +122,18 @@ impl fmt::Display for Hoot {
         let _ = writeln!(f, "");
 
         writeln!(f, "{}", self.text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn serde_test() {
+        use super::Hoot;
+        let hoot = Hoot {text: "aaa".to_string(),quoted_posts:None,reply_to:None,mention_to:Vec::new()};
+        let ser=serde_json::to_string(&hoot).unwrap();
+        println!("{}",ser);
+        let de:Hoot = serde_json::from_str(&ser).unwrap();
+        println!("{:?}",de);
     }
 }
