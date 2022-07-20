@@ -2,7 +2,8 @@ use std::{net::SocketAddr, sync::Arc};
 
 use log::info;
 use tokio::{net::UdpSocket, sync::Mutex};
-use crate::crypto::PublicKey;
+//use crate::crypto::PublicKey;
+use ed25519_dalek::PublicKey;
 
 use crate::{
     kad::{NodeInfo, Rpc},

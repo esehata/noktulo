@@ -73,26 +73,23 @@ impl UserAttribute {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
-    prefix: u8,
     address: [u8; 32],
 }
 
 impl Address {
     pub fn new(address: [u8; 32]) -> Address {
-        Address { prefix: 0, address }
+        Address { address }
     }
 
     pub fn from_str(s: &str) -> Result<Address, AddressError> {
         match base64::decode(s.as_bytes()) {
             Ok(b) => {
-                if b.len() != 37 {
+                if b.len() != 36 {
                     Err(AddressError::Length)
                 } else {
-                    let version = b[0];
-                    let addr = &b[1..33];
-                    let checksum = &b[33..];
+                    let addr = &b[0..32];
+                    let checksum = &b[32..];
                     let ret = Address {
-                        prefix: version,
                         address: addr.try_into().unwrap(),
                     };
                     if checksum != ret.check_sum() {
@@ -108,7 +105,6 @@ impl Address {
 
     pub fn to_string(&self) -> String {
         let payload = [
-            &self.prefix.to_le_bytes()[..],
             &self.address,
             &self.check_sum()[..],
         ]
@@ -117,8 +113,7 @@ impl Address {
     }
 
     fn check_sum(&self) -> [u8; 4] {
-        let payload = [&self.prefix.to_le_bytes()[..], &self.address].concat();
-        Address::sha3(&Address::sha3(&payload))[..4]
+        Address::sha3(&Address::sha3(&self.address))[..4]
             .try_into()
             .unwrap()
     }
@@ -142,7 +137,6 @@ impl Address {
 impl From<PublicKey> for Address {
     fn from(pubkey: PublicKey) -> Address {
         Address {
-            prefix: 0,
             address: Address::hash(pubkey.into()),
         }
     }
@@ -151,7 +145,6 @@ impl From<PublicKey> for Address {
 impl From<[u8; 32]> for Address {
     fn from(b: [u8; 32]) -> Address {
         Address {
-            prefix: 0,
             address: b[..].try_into().unwrap(),
         }
     }

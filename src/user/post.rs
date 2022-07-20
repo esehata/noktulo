@@ -1,6 +1,7 @@
 use super::user::{Address, UserAttribute};
-use crate::crypto::Ed25519Error;
-use crate::crypto::PublicKey;
+//use crate::crypto::Ed25519Error;
+//use crate::crypto::PublicKey;
+use ed25519_dalek::PublicKey;
 use chrono::Local;
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,14 @@ impl SignedPost {
                     )
                     .map_err(|e| VerifyError::Signature(e))
             }
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<SignedPost,()> {
+        if let Ok(post)=serde_json::from_slice::<SignedPost>(bytes) {
+            Ok(post)
+        } else {
+            Err(())
         }
     }
 }

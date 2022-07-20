@@ -3,13 +3,13 @@ use crate::kad::Key;
 use crate::kad::{Node, NodeInfo, Rpc};
 use crate::user::post::SignedPost;
 use crate::user::user::Address;
+use log::info;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
-use log::info;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 use super::{PUBSUB_DHT_KEY_LENGTH, TESTNET_PUBSUB_DHT, TESTNET_USER_DHT, USER_DHT_KEY_LENGTH};
 
@@ -43,7 +43,7 @@ impl UserDHT {
         if data.len() != 64 {
             false
         } else {
-            let addr= Address::new(data[..32].try_into().unwrap());
+            let addr = Address::new(data[..32].try_into().unwrap());
             if let Ok(pk) = PublicKey::from_bytes(&data[32..].try_into().unwrap()) {
                 let addr2 = Address::from(pk);
                 addr == addr2
@@ -114,19 +114,33 @@ impl Publisher {
 pub struct Subscriber {
     rpc: Arc<Mutex<Rpc>>,
     nodes: Arc<Mutex<HashMap<Address, Node>>>,
-    rx: UnboundedReceiver<Vec<u8>>,
     tx: UnboundedSender<Vec<u8>>,
+    broadcast_tx: broadcast::Sender<SignedPost>,
+    broadcast_rx: broadcast::Receiver<SignedPost>,
     bootstrap: Vec<NodeInfo>,
 }
 
 impl Subscriber {
     pub async fn new(rpc: Arc<Mutex<Rpc>>, bootstrap: &[NodeInfo]) -> Subscriber {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (bc_tx, bc_rx) = broadcast::channel(16);
+        let bc_tx2 = bc_tx.clone();
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let Ok(post) = SignedPost::from_bytes(&msg) {
+                    bc_tx2.send(post).unwrap();
+                }
+            }
+        });
+
         Subscriber {
             rpc,
             nodes: Arc::new(Mutex::new(HashMap::new())),
-            rx,
             tx,
+            broadcast_tx: bc_tx,
+            broadcast_rx: bc_rx,
             bootstrap: bootstrap.to_vec(),
         }
     }
@@ -152,15 +166,8 @@ impl Subscriber {
         }
     }
 
-    pub async fn get_new_message(&mut self) -> Vec<SignedPost> {
-        let mut res = Vec::new();
-        while let Ok(bytes) = self.rx.try_recv() {
-            if let Ok(msg) = serde_json::from_slice(&bytes) {
-                res.push(msg);
-            }
-        }
-
-        res
+    pub fn get_receiver(&self) -> broadcast::Receiver<SignedPost> {
+        self.broadcast_tx.subscribe()
     }
 
     pub async fn stop_subscription(&self, addr: &Address) {
